@@ -11,10 +11,11 @@ fontReady.then(() => {
     const game = new Phaser.Game({
     type: Phaser.AUTO,
     parent: 'game',
-    width: 1280,
-    height: 720,
-    backgroundColor: '#1d2b1f',
-    pixelArt: true,
+    width: 1600,
+    height: 900,
+    backgroundColor: '#47aba9',
+    // The art is pixel art but the canvas is usually scaled down to fit, so keep smoothing on.
+    antialias: true,
     roundPixels: true,
     dom: { createContainer: true },
     // Fixed logical resolution, scaled to fit any window while keeping aspect ratio.

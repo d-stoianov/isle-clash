@@ -1,123 +1,113 @@
 import Phaser from 'phaser'
-import { CROP_IDS, CROPS, ITEM_IDS, ITEMS, type CropId, type ItemId, type PlayerState } from '@gogrow/shared'
-import { CROP_PACKET_COL, cropFrame } from './scenes/BootScene.ts'
-import { pixelPanel, text } from './ui.ts'
+import { SHOP, type PlayerState, type ShopId } from '@gogrow/shared'
+import { label, panel, ribbon, text, tiledPanel, INK } from './ui.ts'
 
-export const SEED_KEYS = ['ONE', 'TWO', 'THREE', 'FOUR'] as const
-/** While the shop is open, 5-0 buy tools (1-4 buy seeds). */
-export const ITEM_KEYS = ['FIVE', 'SIX', 'SEVEN', 'EIGHT', 'NINE', 'ZERO'] as const
+/** Shop layout: rows of item ids. Keys 1-7 follow this order. */
+const ROWS: { title: string; ids: ShopId[] }[] = [
+    { title: 'UPGRADES', ids: ['axe', 'pickaxe', 'boots'] },
+    { title: 'SABOTAGE', ids: ['keg', 'raider', 'fire'] },
+    { title: 'DEFENSE', ids: ['tower'] },
+]
+export const SHOP_ORDER: ShopId[] = ROWS.flatMap((r) => r.ids)
+
+const W = 680
+const H = 660
+const CARD_W = 196
+const CARD_H = 132
 
 interface Card {
-    id: CropId | ItemId
-    bg: Phaser.GameObjects.Graphics
+    id: ShopId
+    bg: Phaser.GameObjects.NineSlice
+    parts: (Phaser.GameObjects.Text | Phaser.GameObjects.Image | Phaser.GameObjects.Sprite)[]
+    status: Phaser.GameObjects.Text
+    shade: Phaser.GameObjects.Graphics
     x: number
     y: number
-    w: number
-    h: number
-    cost: number
-    parts: (Phaser.GameObjects.Text | Phaser.GameObjects.Image)[]
-    cooldown: Phaser.GameObjects.Text
 }
 
-const W = 580
-const H = 440
+/** Icon for each shop item, built from pack art. */
+function icon(scene: Phaser.Scene, id: ShopId, x: number, y: number) {
+    switch (id) {
+        case 'axe':
+            return scene.add.image(x, y, 'tool-axe').setScale(1.3)
+        case 'pickaxe':
+            return scene.add.image(x, y, 'tool-pickaxe').setScale(1.3)
+        case 'boots':
+            return scene.add.image(x, y, 'icon-speed').setScale(0.95)
+        case 'keg':
+            return scene.add.sprite(x, y, 'explosion', 2).setScale(0.75)
+        case 'raider':
+            return scene.add.sprite(x, y + 6, 'red-warrior-idle', 0).setScale(0.6)
+        case 'fire':
+            return scene.add.sprite(x, y + 30, 'fire1').play('fire1').setScale(1.9).setOrigin(0.5, 0.9)
+        case 'tower':
+            return scene.add.image(x, y + 4, 'blue-tower').setScale(0.3)
+    }
+}
 
-/** The shop popup shown over your own field while standing at the shop door. */
+/** The castle shop popup, shown over your own island while standing at the gate. */
 export class ShopMenu {
     private container: Phaser.GameObjects.Container
     private cards: Card[] = []
-    private money: Phaser.GameObjects.Text
+    private gold: Phaser.GameObjects.Text
     private desc: Phaser.GameObjects.Text
-    private scene: Phaser.Scene
     isOpen = false
 
-    constructor(scene: Phaser.Scene, cx: number, cy: number, onBuy: (id: CropId | ItemId) => void) {
-        this.scene = scene
-        const left = -W / 2
-        const top = -H / 2
-        this.container = scene.add.container(cx, cy).setDepth(8000).setVisible(false)
-
+    constructor(scene: Phaser.Scene, cx: number, cy: number, onBuy: (id: ShopId) => void, onClose: () => void) {
+        this.container = scene.add.container(cx, cy).setDepth(20000).setVisible(false)
         const blocker = scene.add.rectangle(0, 0, W, H, 0, 0).setInteractive()
-        const bg = scene.add.graphics()
-        pixelPanel(bg, left, top, W, H, 0xc9945a, 6)
-        bg.fillStyle(0xe8c48c, 1).fillRect(left + 14, top + 56, W - 28, H - 70)
-        this.container.add([blocker, bg])
-        this.container.add(text(scene, left + 24, top + 22, 'SHOP', 20, '#3b2412'))
-        this.money = text(scene, -left - 24, top + 22, '', 16, '#3b2412').setOrigin(1, 0)
-        this.container.add(this.money)
+        const bg = tiledPanel(scene, 'woodtable', 0, 0, W, H)
+        const title = ribbon(scene, 'yellow', 0, -H / 2 + 26, 380, 'CASTLE SHOP', 30)
+        this.gold = label(scene, W / 2 - 60, -H / 2 + 62, '', 26, '#ffe066').setOrigin(1, 0.5)
+        const coin = scene.add.image(W / 2 - 38, -H / 2 + 62, 'icon-coin').setScale(0.6)
+        this.container.add([blocker, bg, title.bg, title.text, this.gold, coin])
 
-        this.container.add(text(scene, left + 26, top + 68, 'SEEDS', 10, '#6b4a2a'))
-        const seedW = 124
-        CROP_IDS.forEach((id, i) => {
-            const c = CROPS[id]
-            const icon = scene.add.image(0, 0, 'crops', cropFrame(id, CROP_PACKET_COL)).setOrigin(0.5, 1).setScale(3)
-            this.card(id, left + 26 + i * (seedW + 10), top + 86, seedW, 140, c.cost, String(i + 1), icon, [
-                [c.name, c.name.length > 8 ? 8 : 10],
-                [`$${c.cost}`, 12],
-                [`sells $${c.sellPrice}`, 8],
-                [`grows ${c.growMs / 1000}s`, 8],
-            ], onBuy)
+        let key = 1
+        ROWS.forEach((row, r) => {
+            const y = -H / 2 + 100 + r * (CARD_H + 34)
+            this.container.add(label(scene, -W / 2 + 46, y, row.title, 18, '#f3e2b8').setOrigin(0, 0))
+            row.ids.forEach((id, c) => {
+                const x = -W / 2 + 46 + c * (CARD_W + 10)
+                this.addCard(scene, id, x, y + 24, key++, onBuy)
+            })
         })
 
-        this.container.add(text(scene, left + 26, top + 234, 'TOOLS & SABOTAGE', 10, '#6b4a2a'))
-        const itemW = 82
-        ITEM_IDS.forEach((id, i) => {
-            const it = ITEMS[id]
-            const icon = scene.add.image(0, 0, id).setOrigin(0.5, 1).setScale(3)
-            const card = this.card(id, left + 26 + i * (itemW + 9), top + 252, itemW, 112, it.cost, String((i + 5) % 10), icon, [
-                [it.name, it.name.length > 8 ? 7 : 8],
-                [`$${it.cost}`, 11],
-            ], onBuy)
-            const zone = this.zoneFor(card)
-            zone.on('pointerover', () => this.desc.setText(`${it.name}: ${it.description}`))
-            zone.on('pointerout', () => this.desc.setText(''))
-        })
-
-        this.desc = text(scene, 0, top + 382, '', 9, '#3b2412').setOrigin(0.5, 0)
+        this.desc = text(scene, 120, H / 2 - 148, '', 17, '#f3e2b8', { wordWrap: { width: 260 }, align: 'left' }).setOrigin(0, 0)
         this.container.add(this.desc)
-        this.container.add(text(scene, 0, top + 408, 'Click or press 1-0 to buy.  E or ESC to close', 8, '#6b4a2a').setOrigin(0.5, 0))
+        const hint = label(scene, 0, H / 2 - 40, 'Click or press 1-7 to buy  •  E / ESC to close', 16, '#f3e2b8').setOrigin(0.5)
+        const close = panel(scene, 'btn-red', W / 2 - 34, -H / 2 + 30, 64, 64).setInteractive({ useHandCursor: true })
+        const x = label(scene, W / 2 - 34, -H / 2 + 26, 'X', 24).setOrigin(0.5)
+        close.on('pointerup', onClose)
+        this.container.add([hint, close, x])
     }
 
-    private zones = new Map<Card, Phaser.GameObjects.Zone>()
-    private zoneFor(card: Card) {
-        return this.zones.get(card)!
+    private addCard(scene: Phaser.Scene, id: ShopId, x: number, y: number, key: number, onBuy: (id: ShopId) => void) {
+        const item = SHOP[id]
+        const bg = panel(scene, 'paper', x + CARD_W / 2, y + CARD_H / 2, CARD_W, CARD_H)
+        const ic = icon(scene, id, x + 44, y + 58)
+        const name = text(scene, x + 82, y + 22, item.name, 18, INK, { wordWrap: { width: 108 } })
+        const cost = text(scene, x + 108, y + 86, String(item.cost), 22, '#8a5a12')
+        const coin = scene.add.image(x + 94, y + 99, 'icon-coin').setScale(0.4)
+        const keyHint = text(scene, x + 14, y + 10, String(key), 14, '#8a7350')
+        const shade = scene.add.graphics()
+        const status = label(scene, x + CARD_W / 2, y + CARD_H / 2, '', 22, '#ffffff').setOrigin(0.5)
+        const zone = scene.add.zone(x + CARD_W / 2, y + CARD_H / 2, CARD_W, CARD_H).setInteractive({ useHandCursor: true })
+        zone.on('pointerup', () => onBuy(id))
+        zone.on('pointerover', () => {
+            this.desc.setText(item.description)
+            scene.tweens.add({ targets: ic, scale: ic.scale * 1.15, duration: 100, yoyo: true })
+        })
+        zone.on('pointerout', () => this.desc.setText(''))
+        this.container.add([bg, ic, name, cost, coin, keyHint, shade, status, zone])
+        this.cards.push({ id, bg, parts: [ic, name, cost, coin], status, shade, x, y })
     }
 
-    private card(
-        id: CropId | ItemId,
-        x: number,
-        y: number,
-        w: number,
-        h: number,
-        cost: number,
-        key: string,
-        icon: Phaser.GameObjects.Image,
-        lines: [string, number][],
-        onBuy: (id: CropId | ItemId) => void,
-    ) {
-        const bg = this.scene.add.graphics()
-        icon.setPosition(x + w / 2, y + (h > 120 ? 58 : 46))
-        const parts: Card['parts'] = [icon]
-        let ty = icon.y + 6
-        for (const [str, size] of lines) {
-            parts.push(text(this.scene, x + w / 2, ty, str, size, '#1d1d1d').setOrigin(0.5, 0))
-            ty += size + 7
-        }
-        const keyLabel = text(this.scene, x + 8, y + 8, key, 8, '#6b5a3a')
-        const cooldown = text(this.scene, x + w / 2, y + h / 2, '', 20).setOrigin(0.5).setStroke('#000000', 6)
-        const zone = this.scene.add.zone(x + w / 2, y + h / 2, w, h).setInteractive({ useHandCursor: true })
-        zone.on('pointerdown', () => onBuy(id))
-        this.container.add([bg, ...parts, keyLabel, cooldown, zone])
-        const card: Card = { id, bg, x, y, w, h, cost, parts, cooldown }
-        this.zones.set(card, zone)
-        this.cards.push(card)
-        return card
-    }
-
-    open() {
+    open(me: PlayerState) {
         this.isOpen = true
-        this.container.setVisible(true)
         this.desc.setText('')
+        this.container.setVisible(true).setScale(0.9).setAlpha(0)
+        this.container.scene.tweens.add({ targets: this.container, scale: 1, alpha: 1, duration: 140, ease: 'Back.easeOut' })
+        this.update(me)
     }
 
     close() {
@@ -126,18 +116,19 @@ export class ShopMenu {
     }
 
     update(me: PlayerState) {
-        this.money.setText(`$${me.money}`)
+        this.gold.setText(String(me.gold))
         for (const card of this.cards) {
-            const affordable = me.money >= card.cost
-            const isItem = Object.hasOwn(ITEMS, card.id)
-            const cd = isItem ? me.cooldowns[card.id as ItemId] : 0
-            const total = isItem ? ITEMS[card.id as ItemId].cooldownMs : 1
-            const { bg, x, y, w, h } = card
-            bg.clear()
-            pixelPanel(bg, x, y, w, h, affordable ? 0xf3e7c4 : 0x9e957f, 4)
-            if (cd > 0) bg.fillStyle(0x000000, 0.55).fillRect(x + 4, y + 4, w - 8, (h - 8) * (cd / total))
-            card.parts.forEach((p) => p.setAlpha(affordable ? 1 : 0.5))
-            card.cooldown.setText(cd > 0 ? String(Math.ceil(cd / 1000)) : '')
+            const item = SHOP[card.id]
+            const owned = item.kind === 'upgrade' && me.upgrades[card.id as keyof typeof me.upgrades]
+            const cd = me.cooldowns[card.id]
+            const affordable = me.gold >= item.cost
+            const usable = !owned && cd === 0 && affordable
+            card.parts.forEach((p) => p.setAlpha(usable ? 1 : 0.45))
+            card.shade.clear()
+            if (cd > 0) {
+                card.shade.fillStyle(0x000000, 0.35).fillRoundedRect(card.x + 10, card.y + 10, CARD_W - 20, (CARD_H - 20) * (cd / item.cooldownMs), 8)
+            }
+            card.status.setText(owned ? 'OWNED' : cd > 0 ? `${Math.ceil(cd / 1000)}s` : '')
         }
     }
 }

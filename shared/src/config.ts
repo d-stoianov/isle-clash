@@ -1,172 +1,224 @@
-// Game balance and world layout live here so client and server always agree.
+// Game balance and island layout. Client and server both import this, so they always agree.
+// World units are pixels on one player's island at 1x (1 tile = 64px), origin at the
+// top-left corner of the island's grass.
 
 export const MATCH_DURATION_MS = 180_000
-export const STARTING_MONEY = 100
-/** Server simulation + snapshot rate. Remote avatars are interpolated between snapshots. */
+export const STARTING_GOLD = 30
+/** Server simulation + snapshot rate. Remote units are interpolated between snapshots. */
 export const TICK_RATE = 20
-/** A ripe crop withers if it is not harvested within this window. */
-export const RIPE_WINDOW_MS = 12_000
 
-// ---------- world ----------
-// Each player owns a FIELD_SIZE x FIELD_SIZE farm, in world pixels (1 tile = 16px).
-// The client draws it scaled up; the server uses the same units for range checks.
+// ---------- island ----------
 
-export const TILE = 16
-export const FIELD_SIZE = 13 * TILE
-export const PLAYER_SPEED = 80 // world px / second
-export const SPAWN = { x: 112, y: 106 }
-/** Walkable area for the avatar's feet. */
-export const BOUNDS = { minX: 8, maxX: FIELD_SIZE - 8, minY: 14, maxY: FIELD_SIZE - 20 }
-/** The shop building; its door is where players stand to shop. */
-export const SHOP = { x: 6, y: 2, door: { x: 62, y: 106 } }
-/** Rectangle the avatar's feet can't enter (the shop building). */
-export const SHOP_COLLIDER = { minX: 8, maxX: 88, minY: 26, maxY: 98 }
-export const SHOP_RANGE = 18
-export const PLOT_RANGE = 16
+export const TILE = 64
+export const ISLAND_COLS = 11
+export const ISLAND_ROWS = 9
+export const ISLAND_W = ISLAND_COLS * TILE
+export const ISLAND_H = ISLAND_ROWS * TILE
 
-export const PLOT_COLS = 4
-export const PLOT_ROWS = 3
-export const PLOT_COUNT = PLOT_COLS * PLOT_ROWS
-const PLOT_PITCH = 26
-const PLOT_ORIGIN = { x: 62, y: 124 }
+/** Walkable area for a unit's feet. */
+export const BOUNDS = { minX: 28, maxX: ISLAND_W - 28, minY: 30, maxY: ISLAND_H - 24 }
+export const SPAWN = { x: 352, y: 262 }
 
-/** Center of a plot in world pixels. */
-export function plotCenter(i: number) {
-    return {
-        x: PLOT_ORIGIN.x + (i % PLOT_COLS) * PLOT_PITCH + TILE / 2,
-        y: PLOT_ORIGIN.y + Math.floor(i / PLOT_COLS) * PLOT_PITCH + TILE / 2,
-    }
+/** The castle: bank (deliver loads here) and shop. Players stand near the gate. */
+export const CASTLE = { x: 352, y: 208, gate: { x: 352, y: 228 } }
+export const CASTLE_COLLIDER = { minX: 200, maxX: 504, minY: 40, maxY: 200 }
+export const GATE_RANGE = 70
+/** Where the defensive archer tower appears when bought. */
+export const TOWER_SPOT = { x: 586, y: 150 }
+
+export type ResourceKind = 'tree' | 'gold'
+export type LoadKind = 'wood' | 'gold' | 'meat'
+
+export interface ResourceSpot {
+    kind: ResourceKind
+    x: number
+    y: number
 }
 
-export function distance(a: { x: number; y: number }, b: { x: number; y: number }) {
-    return Math.hypot(a.x - b.x, a.y - b.y)
+export const RESOURCE_SPOTS: ResourceSpot[] = [
+    { kind: 'tree', x: 84, y: 250 },
+    { kind: 'tree', x: 92, y: 420 },
+    { kind: 'tree', x: 620, y: 262 },
+    { kind: 'tree', x: 612, y: 430 },
+    { kind: 'tree', x: 352, y: 545 },
+    { kind: 'gold', x: 200, y: 520 },
+    { kind: 'gold', x: 505, y: 520 },
+]
+
+/** Sheep wander (and flee) inside this meadow. */
+export const MEADOW = { minX: 190, maxX: 515, minY: 300, maxY: 450 }
+export const SHEEP_COUNT = 3
+
+export const REACH = 62
+/** Solid radius around resources, used for client-side collision. */
+export const RESOURCE_RADIUS: Record<ResourceKind, number> = { tree: 20, gold: 30 }
+
+// ---------- units ----------
+
+export const PAWN_SPEED = 210
+export const BOOTS_SPEED = 265
+export const SHEEP_SPEED = 70
+export const SHEEP_FLEE_SPEED = 150
+export const SHEEP_FLEE_RANGE = 120
+/** Minimum time between two tool swings. Mashing faster does nothing. */
+export const SWING_COOLDOWN_MS = 260
+
+export const LOADS: Record<LoadKind, { value: number; name: string }> = {
+    wood: { value: 10, name: 'Wood' },
+    meat: { value: 22, name: 'Meat' },
+    gold: { value: 40, name: 'Gold' },
 }
 
-/** The plot closest to a position, if it's within reach. */
-export function plotInReach(pos: { x: number; y: number }, slack = 0): number | null {
-    let best: number | null = null
-    let bestDist = PLOT_RANGE + slack
-    for (let i = 0; i < PLOT_COUNT; i++) {
-        const d = distance(pos, plotCenter(i))
-        if (d <= bestDist) {
-            best = i
-            bestDist = d
-        }
-    }
-    return best
+/** Swings needed to finish each source, with and without the tool upgrade. */
+export const SWINGS = {
+    tree: { base: 3, upgraded: 2 },
+    gold: { base: 6, upgraded: 3 },
+    sheep: { base: 2, upgraded: 2 },
 }
 
-export function atShop(pos: { x: number; y: number }, slack = 0) {
-    return distance(pos, SHOP.door) <= SHOP_RANGE + slack
-}
+export const REGROW_MS = { tree: 12_000, gold: 20_000, sheep: 10_000 }
 
-// ---------- crops ----------
+// ---------- shop ----------
 
-export type CropId = 'leek' | 'strawberry' | 'onion' | 'potato'
+export type UpgradeId = 'axe' | 'pickaxe' | 'boots'
+export type AttackId = 'keg' | 'raider' | 'fire'
+export type DefenseId = 'tower'
+export type ShopId = UpgradeId | AttackId | DefenseId
 
-export interface CropDef {
-    id: CropId
-    name: string
-    cost: number
-    growMs: number
-    sellPrice: number
-}
-
-// Tiers from fast (5s) to slow (25s). Slow crops pay far better per second,
-// but they sit on the field longer as a juicy target for the opponent.
-export const CROPS: Record<CropId, CropDef> = {
-    leek: { id: 'leek', name: 'Leek', cost: 10, growMs: 5_000, sellPrice: 22 },
-    strawberry: { id: 'strawberry', name: 'Strawberry', cost: 25, growMs: 11_000, sellPrice: 60 },
-    onion: { id: 'onion', name: 'Onion', cost: 45, growMs: 17_000, sellPrice: 115 },
-    potato: { id: 'potato', name: 'Potato', cost: 80, growMs: 25_000, sellPrice: 220 },
-}
-
-export const CROP_IDS = Object.keys(CROPS) as CropId[]
-
-// ---------- shop items ----------
-
-export type ItemId = 'fertilizer' | 'scarecrow' | 'lightning' | 'drought' | 'freeze' | 'tornado'
-
-export interface ItemDef {
-    id: ItemId
+export interface ShopItem {
+    id: ShopId
     name: string
     cost: number
     cooldownMs: number
-    /** buffs affect yourself, debuffs affect the opponent */
-    kind: 'buff' | 'debuff'
-    /** true when the item needs an opponent plot to be picked */
+    kind: 'upgrade' | 'attack' | 'defense'
+    /** attack needs a spot on the enemy island to be picked */
     targeted: boolean
     description: string
 }
 
-export const DROUGHT_DURATION_MS = 15_000
-export const DROUGHT_GROWTH_MULTIPLIER = 0.4
-export const FREEZE_DURATION_MS = 3_000
-export const SCARECROW_DURATION_MS = 30_000
+export const KEG_FUSE_MS = 1_600
+export const KEG_RADIUS = 105
+export const KEG_STUN_MS = 2_000
+export const RAIDER_SPEED = 175
+export const RAIDER_LIFETIME_MS = 12_000
+export const RAIDER_REACH = 48
+export const RAIDER_WINDUP_MS = 380
+export const RAIDER_STUN_MS = 1_500
+export const FIRE_MS = 7_000
+export const TOWER_MS = 45_000
+/** How long a raider survives on an island guarded by a tower. */
+export const TOWER_SHOT_DELAY_MS = 700
 
-export const ITEMS: Record<ItemId, ItemDef> = {
-    fertilizer: {
-        id: 'fertilizer',
-        name: 'Fertilizer',
-        cost: 70,
-        cooldownMs: 25_000,
-        kind: 'buff',
-        targeted: false,
-        description: 'Instantly ripens all your crops',
-    },
-    scarecrow: {
-        id: 'scarecrow',
-        name: 'Scarecrow',
-        cost: 35,
-        cooldownMs: 15_000,
-        kind: 'buff',
-        targeted: false,
-        description: 'Blocks the next debuff (30s)',
-    },
-    lightning: {
-        id: 'lightning',
-        name: 'Lightning',
-        cost: 35,
-        cooldownMs: 6_000,
-        kind: 'debuff',
-        targeted: true,
-        description: 'Destroys one enemy crop you pick',
-    },
-    drought: {
-        id: 'drought',
-        name: 'Drought',
-        cost: 45,
-        cooldownMs: 20_000,
-        kind: 'debuff',
-        targeted: false,
-        description: 'Enemy crops grow 60% slower (15s)',
-    },
-    freeze: {
-        id: 'freeze',
-        name: 'Freeze',
+export const SHOP: Record<ShopId, ShopItem> = {
+    axe: {
+        id: 'axe',
+        name: 'Sharp Axe',
         cost: 50,
+        cooldownMs: 0,
+        kind: 'upgrade',
+        targeted: false,
+        description: 'Trees fall in 2 swings instead of 3',
+    },
+    pickaxe: {
+        id: 'pickaxe',
+        name: 'Steel Pickaxe',
+        cost: 80,
+        cooldownMs: 0,
+        kind: 'upgrade',
+        targeted: false,
+        description: 'Gold breaks in 3 swings instead of 6',
+    },
+    boots: {
+        id: 'boots',
+        name: 'Swift Boots',
+        cost: 70,
+        cooldownMs: 0,
+        kind: 'upgrade',
+        targeted: false,
+        description: 'Run 25% faster',
+    },
+    keg: {
+        id: 'keg',
+        name: 'Powder Keg',
+        cost: 60,
+        cooldownMs: 8_000,
+        kind: 'attack',
+        targeted: true,
+        description: 'Blows up a spot on their island: stuns, drops their load, wrecks trees and gold',
+    },
+    raider: {
+        id: 'raider',
+        name: 'Raider',
+        cost: 90,
         cooldownMs: 20_000,
-        kind: 'debuff',
+        kind: 'attack',
         targeted: false,
-        description: 'Enemy cannot move or act (3s)',
+        description: 'A warrior lands on their island and hunts their worker for 12s',
     },
-    tornado: {
-        id: 'tornado',
-        name: 'Tornado',
-        cost: 200,
-        cooldownMs: 45_000,
-        kind: 'debuff',
+    fire: {
+        id: 'fire',
+        name: 'Torch',
+        cost: 70,
+        cooldownMs: 20_000,
+        kind: 'attack',
         targeted: false,
-        description: 'Destroys ALL enemy crops',
+        description: 'Sets their castle ablaze for 7s: no deliveries, no shopping',
+    },
+    tower: {
+        id: 'tower',
+        name: 'Archer Tower',
+        cost: 60,
+        cooldownMs: 30_000,
+        kind: 'defense',
+        targeted: false,
+        description: 'Guards your island for 45s: shoots down any raider',
     },
 }
 
-export const ITEM_IDS = Object.keys(ITEMS) as ItemId[]
+export const SHOP_IDS = Object.keys(SHOP) as ShopId[]
+export const UPGRADE_IDS: UpgradeId[] = ['axe', 'pickaxe', 'boots']
 
-export function isCrop(id: string): id is CropId {
-    return Object.hasOwn(CROPS, id)
+export function isShopId(id: unknown): id is ShopId {
+    return typeof id === 'string' && Object.hasOwn(SHOP, id)
 }
 
-export function isItem(id: string): id is ItemId {
-    return Object.hasOwn(ITEMS, id)
+// ---------- geometry helpers ----------
+
+export interface Point {
+    x: number
+    y: number
+}
+
+export function distance(a: Point, b: Point) {
+    return Math.hypot(a.x - b.x, a.y - b.y)
+}
+
+export function clamp(v: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, v))
+}
+
+export function atGate(p: Point, slack = 0) {
+    return distance(p, CASTLE.gate) <= GATE_RANGE + slack
+}
+
+export function speedFor(boots: boolean) {
+    return boots ? BOOTS_SPEED : PAWN_SPEED
+}
+
+/**
+ * Moves `from` toward `to` while keeping feet inside the island and out of the
+ * castle and resource colliders. Used by the client for its own avatar and by
+ * the server for bots, so both walk the same way.
+ */
+export function walk(from: Point, to: Point): Point {
+    const blocked = (x: number, y: number) => {
+        const c = CASTLE_COLLIDER
+        if (x > c.minX && x < c.maxX && y > c.minY && y < c.maxY) return true
+        return RESOURCE_SPOTS.some((r) => distance({ x, y }, r) < RESOURCE_RADIUS[r.kind])
+    }
+    let x = clamp(to.x, BOUNDS.minX, BOUNDS.maxX)
+    let y = clamp(to.y, BOUNDS.minY, BOUNDS.maxY)
+    if (blocked(x, from.y)) x = from.x
+    if (blocked(x, y)) y = from.y
+    return { x, y }
 }

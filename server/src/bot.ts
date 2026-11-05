@@ -1,29 +1,33 @@
 import {
-    atShop,
-    CROP_IDS,
-    CROPS,
+    atGate,
+    CASTLE,
     distance,
-    ITEMS,
-    PLAYER_SPEED,
-    plotCenter,
-    plotInReach,
+    LOADS,
+    REACH,
+    RESOURCE_SPOTS,
     SHOP,
+    speedFor,
+    SWING_COOLDOWN_MS,
+    walk,
     type Facing,
+    type Point,
     type ServerMessage,
+    type ShopId,
 } from '@gogrow/shared'
 import type { Match, Participant } from './match.ts'
 
-const BOT_NAMES = ['Farmer Bot', 'Old MacBot', 'Robo Reaper', 'Tractor 3000']
+const BOT_NAMES = ['Sir Botsalot', 'Lord Pixel', 'Duke Chopper', 'Baron Bleat']
 const THINK_MS = 50
-/** Pause between actions so the bot plays at a human-ish pace. */
-const ACTION_COOLDOWN_MS = 350
+/** The bot swings a bit slower than a fast human can mash. */
+const BOT_SWING_MS = SWING_COOLDOWN_MS + 140
 
-/** A simple practice opponent. It walks and acts through the same Match API as humans. */
+/** A practice opponent that walks, gathers and sabotages through the same Match API as humans. */
 export class Bot implements Participant {
     readonly name = BOT_NAMES[Math.floor(Math.random() * BOT_NAMES.length)]!
     private match: Match | null = null
     private timer: ReturnType<typeof setInterval> | null = null
-    private busyMs = 0
+    private swingIn = 0
+    private shopIn = 0
 
     attach(match: Match) {
         this.match = match
@@ -37,76 +41,70 @@ export class Bot implements Participant {
     private think() {
         const match = this.match
         if (!match) return
-        const { you, opponent, timeLeftMs } = match.view(this)
-        if (you.effects.frozenMs > 0) return
-        if (this.busyMs > 0) {
-            this.busyMs -= THINK_MS
+        const { you, opponent } = match.view(this)
+        this.swingIn -= THINK_MS
+        this.shopIn -= THINK_MS
+        if (you.effects.stunMs > 0) return
+
+        if (atGate(you.pawn) && this.shopIn <= 0) {
+            this.shopIn = 1500
+            const pick = this.shoppingList(you.gold, you.upgrades, opponent.raider !== null)
+            if (pick && you.cooldowns[pick] === 0) {
+                const target = SHOP[pick].targeted ? { x: opponent.pawn.x, y: opponent.pawn.y } : {}
+                match.handle(this, { t: 'buy', id: pick, ...target })
+            }
+        }
+
+        if (you.carrying) return this.walkTo(CASTLE.gate, 20)
+
+        // Pick the best value-per-distance target that is standing.
+        const options: { p: Point; value: number }[] = []
+        you.resources.forEach((r, i) => {
+            if (r.regrowMs === 0 && r.hp > 0) options.push({ p: RESOURCE_SPOTS[i]!, value: LOADS[r.kind === 'tree' ? 'wood' : 'gold'].value / r.hp })
+        })
+        you.sheep.forEach((s) => {
+            if (s.alive) options.push({ p: s, value: LOADS.meat.value / 3 })
+        })
+        const best = options.sort((a, b) => b.value / (distance(you.pawn, b.p) + 120) - a.value / (distance(you.pawn, a.p) + 120))[0]
+        if (!best) return this.stop()
+        if (distance(you.pawn, best.p) <= REACH - 8) {
+            this.stop()
+            if (this.swingIn <= 0) {
+                match.handle(this, { t: 'swing' })
+                this.swingIn = BOT_SWING_MS
+            }
             return
         }
-        const act = (msg: Parameters<Match['handle']>[1]) => {
-            this.stop()
-            match.handle(this, msg)
-            this.busyMs = ACTION_COOLDOWN_MS
-        }
-
-        // 1. Harvest anything ripe.
-        const ripe = you.plots.findIndex((p) => p.crop && p.progress >= 1)
-        if (ripe !== -1) {
-            if (plotInReach(you.avatar) === ripe) return act({ t: 'harvest', plot: ripe })
-            return this.walkTo(plotCenter(ripe))
-        }
-
-        const seedCount = CROP_IDS.reduce((n, id) => n + you.seeds[id], 0)
-        const emptyPlots = you.plots.flatMap((p, i) => (p.crop ? [] : [i]))
-
-        // 2. Plant seeds we carry.
-        if (seedCount > 0 && emptyPlots.length) {
-            const target = emptyPlots.sort((a, b) => distance(you.avatar, plotCenter(a)) - distance(you.avatar, plotCenter(b)))[0]!
-            if (plotInReach(you.avatar) === target) {
-                const crop = CROP_IDS.find((id) => you.seeds[id] > 0)!
-                return act({ t: 'plant', plot: target, crop })
-            }
-            return this.walkTo(plotCenter(target))
-        }
-
-        // 3. Restock (and maybe sabotage) at the shop.
-        const affordable = CROP_IDS.filter((id) => CROPS[id].cost <= you.money && CROPS[id].growMs < timeLeftMs - 4_000)
-        if (emptyPlots.length && affordable.length) {
-            if (!atShop(you.avatar)) return this.walkTo(SHOP.door)
-            const juiciest = opponent.plots
-                .map((p, i) => ({ i, value: p.crop ? CROPS[p.crop].sellPrice * p.progress : 0 }))
-                .sort((a, b) => b.value - a.value)[0]
-            if (
-                juiciest &&
-                juiciest.value > 90 &&
-                you.cooldowns.lightning === 0 &&
-                you.money >= ITEMS.lightning.cost + 30 &&
-                Math.random() < 0.3
-            ) {
-                return act({ t: 'buy', id: 'lightning', plot: juiciest.i })
-            }
-            const pick = affordable[Math.floor(Math.random() * affordable.length)]!
-            return act({ t: 'buy', id: pick })
-        }
-
-        this.stop()
+        this.walkTo(best.p, REACH - 14)
     }
 
-    private walkTo(target: { x: number; y: number }) {
+    private shoppingList(gold: number, upgrades: Record<string, boolean>, raiderBusy: boolean): ShopId | null {
+        if (!upgrades.pickaxe && gold >= SHOP.pickaxe.cost + 40) return 'pickaxe'
+        if (!upgrades.axe && gold >= SHOP.axe.cost + 40) return 'axe'
+        if (gold >= 180 && Math.random() < 0.5) return 'keg'
+        if (gold >= 260 && !raiderBusy && Math.random() < 0.4) return 'raider'
+        if (!upgrades.boots && gold >= 200) return 'boots'
+        return null
+    }
+
+    private walkTo(target: Point, stopAt: number) {
         const match = this.match!
-        const a = match.view(this).you.avatar
-        const dx = target.x - a.x
-        const dy = target.y - a.y
-        const d = Math.hypot(dx, dy)
-        const step = Math.min(d, (PLAYER_SPEED * 0.9 * THINK_MS) / 1000)
-        if (d < 1) return this.stop()
-        const facing: Facing = Math.abs(dx) > Math.abs(dy) ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up'
-        match.handle(this, { t: 'move', x: a.x + (dx / d) * step, y: a.y + (dy / d) * step, facing, moving: true })
+        const { you } = match.view(this)
+        const a = you.pawn
+        const d = distance(a, target)
+        if (d <= stopAt) return this.stop()
+        const step = Math.min(d, (speedFor(you.upgrades.boots) * 0.85 * THINK_MS) / 1000)
+        let next = walk(a, { x: a.x + ((target.x - a.x) / d) * step, y: a.y + ((target.y - a.y) / d) * step })
+        // Stuck on a collider: sidestep vertically, then horizontally.
+        if (distance(next, a) < 0.5) next = walk(a, { x: a.x, y: a.y + Math.sign(target.y - a.y || 1) * step })
+        if (distance(next, a) < 0.5) next = walk(a, { x: a.x + Math.sign(target.x - a.x || 1) * step, y: a.y })
+        const facing: Facing = target.x < a.x ? 'left' : 'right'
+        match.handle(this, { t: 'move', x: next.x, y: next.y, facing, moving: true })
     }
 
     private stop() {
         const match = this.match!
-        const a = match.view(this).you.avatar
+        const a = match.view(this).you.pawn
         if (a.moving) match.handle(this, { t: 'move', x: a.x, y: a.y, facing: a.facing, moving: false })
     }
 }

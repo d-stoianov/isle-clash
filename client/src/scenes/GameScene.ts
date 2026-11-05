@@ -1,105 +1,115 @@
 import Phaser from 'phaser'
 import {
-    atShop,
-    BOUNDS,
-    CROP_IDS,
-    CROPS,
+    atGate,
     distance,
-    isCrop,
-    ITEMS,
-    ITEM_IDS,
-    PLAYER_SPEED,
-    plotInReach,
-    SHOP_COLLIDER,
+    KEG_RADIUS,
+    LOADS,
+    nearestTarget,
+    RESOURCE_SPOTS,
+    SHOP,
     SPAWN,
+    speedFor,
+    SWING_COOLDOWN_MS,
     TICK_RATE,
-    type AvatarState,
-    type CropId,
+    UPGRADE_IDS,
+    walk,
     type Facing,
     type GameEvent,
-    type ItemId,
+    type PlayerState,
+    type RaiderState,
     type ServerMessage,
+    type SheepState,
+    type ShopId,
+    type Side,
+    type UnitState,
 } from '@gogrow/shared'
 import { net } from '../net.ts'
-import { Farm, FIELD_PX } from '../Farm.ts'
-import { Avatar } from '../Avatar.ts'
-import { ITEM_KEYS, SEED_KEYS, ShopMenu } from '../ShopMenu.ts'
-import { CROP_PRODUCE_COL, cropFrame } from './BootScene.ts'
-import { button, floatText, pixelPanel, text } from '../ui.ts'
+import { Island } from '../Island.ts'
+import { Unit, type PawnAction } from '../Unit.ts'
+import { SHOP_ORDER, ShopMenu } from '../ShopMenu.ts'
+import { button, floatText, fx, label, ribbon, text, tiledPanel } from '../ui.ts'
 
 type StateMsg = Extract<ServerMessage, { t: 'state' }>
 type EndMsg = Extract<ServerMessage, { t: 'end' }>
-interface Snapshot extends AvatarState {
-    at: number
-}
 
-const HALF = 640
-const FIELD_Y = 88
-/** Remote avatars are drawn this far in the past so there are always two snapshots to blend. */
+const W = 1600
+const H = 900
+const HALF = 800
+const ISLAND_X = 48
+const ISLAND_Y = 172
+/** Remote things are drawn this far in the past so there are always two snapshots to blend. */
 const INTERP_DELAY_MS = 100
 const SEND_INTERVAL_MS = 1000 / TICK_RATE
 /** If our predicted position drifts this far from the server's, snap to the server. */
-const RECONCILE_PX = 20
+const RECONCILE_PX = 48
+const NUM_KEYS = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'] as const
+
+interface Hud {
+    gold: Phaser.GameObjects.Text
+    coin: Phaser.GameObjects.Image
+    carry: Phaser.GameObjects.Image
+    upgrades: Phaser.GameObjects.Image[]
+    shown: number
+}
 
 export class GameScene extends Phaser.Scene {
-    private myFarm!: Farm
-    private oppFarm!: Farm
-    private me!: Avatar
-    private opp!: Avatar
+    private myIsland!: Island
+    private oppIsland!: Island
+    private me!: Unit
+    private opp!: Unit
     private shop!: ShopMenu
-    private state: StateMsg | null = null
+    private snaps: { at: number; msg: StateMsg }[] = []
     private pos = { ...SPAWN }
-    private facing: Facing = 'down'
+    private facing: Facing = 'right'
     private moving = false
     private lastSent = 0
     private sentMoving = false
-    private oppSnaps: Snapshot[] = []
-    private selectedSeed: CropId = 'leek'
-    private aiming: ItemId | null = null
+    private lastSwing = 0
+    private aiming: ShopId | null = null
+    private aimRing!: Phaser.GameObjects.Graphics
     private keys!: Record<'up' | 'down' | 'left' | 'right' | 'w' | 'a' | 's' | 'd', Phaser.Input.Keyboard.Key>
     private timerText!: Phaser.GameObjects.Text
-    private myMoney!: Phaser.GameObjects.Text
-    private oppMoney!: Phaser.GameObjects.Text
-    private mySeeds: { icon: Phaser.GameObjects.Image; count: Phaser.GameObjects.Text; frame: Phaser.GameObjects.Graphics }[] = []
-    private oppSeeds: Phaser.GameObjects.Text[] = []
+    private huds!: Record<Side, Hud>
     private hint!: Phaser.GameObjects.Text
-    private feed: string[] = []
-    private feedText!: Phaser.GameObjects.Text
+    private logText!: Phaser.GameObjects.Text
     private toast!: Phaser.GameObjects.Text
-    private opponentName = 'Opponent'
+    private opponentName = 'Rival'
     private ended = false
 
     constructor() {
         super('game')
     }
 
+    private get latest(): StateMsg | null {
+        return this.snaps.at(-1)?.msg ?? null
+    }
+
     create(data: { myName: string; opponentName: string }) {
         this.ended = false
-        this.feed = []
-        this.state = null
+        this.snaps = []
         this.pos = { ...SPAWN }
-        this.facing = 'down'
+        this.facing = 'right'
         this.moving = false
-        this.oppSnaps = []
         this.aiming = null
-        this.selectedSeed = 'leek'
-        this.mySeeds = []
-        this.oppSeeds = []
         this.opponentName = data.opponentName
 
-        this.add.rectangle(0, 0, 1280, 720, 0x1d2b1f).setOrigin(0).setDepth(-20)
-        this.add.rectangle(HALF, 360, 8, 720, 0x0e150d).setDepth(-19)
-
-        this.myFarm = new Farm(this, 8, FIELD_Y, (i) => this.clickMyPlot(i))
-        this.oppFarm = new Farm(this, HALF + 8, FIELD_Y, (i) => this.clickOppPlot(i))
-        this.me = new Avatar(this, data.myName, '#c8f56b', 3)
-        this.opp = new Avatar(this, data.opponentName, '#ffb36b', 3)
-        this.me.setPosition(this.myFarm.sx(SPAWN.x), this.myFarm.sy(SPAWN.y))
-        this.opp.setPosition(this.oppFarm.sx(SPAWN.x), this.oppFarm.sy(SPAWN.y))
+        this.add.tileSprite(0, 0, W, H, 'water').setOrigin(0).setDepth(-100)
+        this.myIsland = new Island(this, ISLAND_X, ISLAND_Y, 'blue', 'red')
+        this.oppIsland = new Island(this, HALF + ISLAND_X, ISLAND_Y, 'red', 'blue')
+        this.me = new Unit(this, 'blue', 'pawn', data.myName)
+        this.opp = new Unit(this, 'red', 'pawn', data.opponentName)
+        this.me.setPosition(this.myIsland.sx(SPAWN.x), this.myIsland.sy(SPAWN.y))
+        this.opp.setPosition(this.oppIsland.sx(SPAWN.x), this.oppIsland.sy(SPAWN.y))
+        this.spawnClouds()
 
         this.buildHud(data.myName, data.opponentName)
-        this.shop = new ShopMenu(this, 8 + FIELD_PX / 2, FIELD_Y + FIELD_PX / 2, (id) => this.buy(id))
+        this.shop = new ShopMenu(this, ISLAND_X + 352, ISLAND_Y + 345, (id) => this.buy(id), () => this.shop.close())
+        this.aimRing = this.add.graphics().setDepth(9600)
         this.bindKeys()
+
+        const go = label(this, W / 2, H / 2, 'GO!', 120, '#ffe066').setOrigin(0.5).setDepth(30000).setScale(0.3)
+        this.tweens.add({ targets: go, scale: 1.2, duration: 350, ease: 'Back.easeOut' })
+        this.tweens.add({ targets: go, alpha: 0, delay: 700, duration: 300, onComplete: () => go.destroy() })
 
         const handlers: [string, (msg: never) => void][] = [
             ['state', (m: StateMsg) => this.onState(m)],
@@ -114,67 +124,61 @@ export class GameScene extends Phaser.Scene {
         })
     }
 
-    // ---------- HUD ----------
+    // ---------- scenery & HUD ----------
+
+    private spawnClouds() {
+        for (const [key, y, delay] of [['cloud1', 120, 0], ['cloud3', 520, 9000], ['cloud5', 820, 18000]] as const) {
+            const cloud = this.add.image(-400, y, key).setAlpha(0.35).setDepth(8500).setScale(0.9)
+            this.tweens.add({ targets: cloud, x: W + 400, duration: 42000, delay, repeat: -1 })
+        }
+    }
 
     private buildHud(myName: string, oppName: string) {
-        text(this, 20, 14, myName, 14, '#c8f56b')
-        text(this, HALF + 96, 14, oppName, 14, '#ffb36b')
-        this.myMoney = text(this, HALF - 100, 14, '$0', 16, '#ffe066').setOrigin(1, 0)
-        this.oppMoney = text(this, 1280 - 20, 14, '$0', 16, '#ffe066').setOrigin(1, 0)
+        this.huds = {
+            you: this.buildPlayerHud(0, myName, 'blue', 1),
+            opponent: this.buildPlayerHud(HALF, oppName, 'red', -1),
+        }
+        tiledPanel(this, 'woodtable', W / 2, 62, 210, 112).setDepth(10000)
+        this.timerText = label(this, W / 2, 58, '3:00', 44).setOrigin(0.5).setDepth(10001)
 
-        const timerBg = this.add.graphics().setDepth(9000)
-        pixelPanel(timerBg, HALF - 74, 6, 148, 50, 0x1d2b1f)
-        this.timerText = text(this, HALF, 32, '3:00', 22).setOrigin(0.5).setDepth(9001)
-
-        CROP_IDS.forEach((id, i) => {
-            const x = 20 + i * 76
-            const frame = this.add.graphics()
-            const icon = this.add.image(x + 16, 72, 'crops', cropFrame(id, CROP_PRODUCE_COL)).setOrigin(0.5, 1).setScale(2)
-            const count = text(this, x + 36, 50, '0', 12)
-            text(this, x - 2, 38, String(i + 1), 7, '#8fa786')
-            this.add.zone(x + 26, 56, 70, 34).setInteractive({ useHandCursor: true }).on('pointerdown', () => this.selectSeed(id))
-            this.mySeeds.push({ icon, count, frame })
-
-            const ox = HALF + 96 + i * 76
-            this.add.image(ox + 16, 72, 'crops', cropFrame(id, CROP_PRODUCE_COL)).setOrigin(0.5, 1).setScale(2)
-            this.oppSeeds.push(text(this, ox + 36, 50, '0', 12))
-        })
-
-        this.hint = text(this, 8 + FIELD_PX / 2, FIELD_Y + FIELD_PX - 8, '', 9, '#ffffff')
-            .setOrigin(0.5, 1)
-            .setStroke('#000000', 4)
-            .setDepth(4700)
-        this.feedText = text(this, 1280 - 18, FIELD_Y + 10, '', 9, '#ffffff', { align: 'right', lineSpacing: 6 })
-            .setOrigin(1, 0)
-            .setStroke('#000000', 4)
-            .setDepth(9000)
-        this.toast = text(this, 8 + FIELD_PX / 2, FIELD_Y + 40, '', 14, '#ff7b6b')
-            .setOrigin(0.5)
-            .setStroke('#000000', 6)
-            .setDepth(9500)
-            .setAlpha(0)
-        this.refreshSeedBar()
+        this.hint = label(this, ISLAND_X + 352, H - 34, '', 17, '#f3f7ff').setOrigin(0.5).setDepth(10000)
+        this.logText = label(this, HALF + ISLAND_X + 352, H - 34, '', 17, '#ffe7c2').setOrigin(0.5).setDepth(10000)
+        this.toast = label(this, ISLAND_X + 352, ISLAND_Y + 40, '', 26, '#ffd0c4').setOrigin(0.5).setDepth(25000).setAlpha(0)
     }
 
-    private refreshSeedBar() {
-        const seeds = this.state?.you.seeds
-        CROP_IDS.forEach((id, i) => {
-            const slot = this.mySeeds[i]!
-            const n = seeds?.[id] ?? 0
-            slot.count.setText(String(n))
-            slot.icon.setAlpha(n > 0 ? 1 : 0.35)
-            slot.frame.clear()
-            if (id === this.selectedSeed) {
-                const x = 20 + i * 76 - 6
-                slot.frame.lineStyle(3, 0xc8f56b, 1).strokeRect(x, 34, 72, 44)
-            }
-            this.oppSeeds[i]!.setText(String(this.state?.opponent.seeds[id] ?? 0))
-        })
+    /** Portrait, name ribbon, gold, carried load and owned upgrades. `dir` mirrors the right side. */
+    private buildPlayerHud(x0: number, name: string, team: 'blue' | 'red', dir: 1 | -1): Hud {
+        const edge = dir === 1 ? x0 : x0 + HALF
+        const at = (dx: number) => edge + dir * dx
+        const d = 10000
+        const r = ribbon(this, team, at(300), 46, 330, name, 26)
+        r.bg.setDepth(d)
+        r.text.setDepth(d + 1)
+        this.add.image(at(76), 70, `avatar-${team}`).setScale(0.48).setDepth(d + 2)
+        const coin = this.add.image(at(168), 120, 'icon-coin').setScale(0.7).setDepth(d)
+        const gold = label(this, at(194), 120, '0', 36, '#ffe066').setOrigin(dir === 1 ? 0 : 1, 0.5).setDepth(d)
+        const carry = this.add.image(at(330), 120, 'res-wood').setScale(0.6).setDepth(d).setVisible(false)
+        const upgrades = UPGRADE_IDS.map((id, i) =>
+            this.add
+                .image(at(400 + i * 44), 120, id === 'axe' ? 'tool-axe' : id === 'pickaxe' ? 'tool-pickaxe' : 'icon-speed')
+                .setScale(id === 'boots' ? 0.55 : 0.85)
+                .setDepth(d)
+                .setAlpha(0.2),
+        )
+        return { gold, coin, carry, upgrades, shown: -1 }
     }
 
-    private selectSeed(id: CropId) {
-        this.selectedSeed = id
-        this.refreshSeedBar()
+    private updateHud(side: Side, p: PlayerState) {
+        const hud = this.huds[side]
+        if (p.gold !== hud.shown) {
+            const first = hud.shown < 0
+            hud.shown = p.gold
+            hud.gold.setText(String(p.gold))
+            if (!first) this.tweens.add({ targets: hud.gold, scale: 1.25, duration: 90, yoyo: true })
+        }
+        hud.carry.setVisible(!!p.carrying)
+        if (p.carrying) hud.carry.setTexture(`res-${p.carrying}`).setScale(p.carrying === 'gold' ? 0.9 : 0.75)
+        UPGRADE_IDS.forEach((id, i) => hud.upgrades[i]!.setAlpha(p.upgrades[id] ? 1 : 0.2))
     }
 
     // ---------- input ----------
@@ -184,114 +188,83 @@ export class GameScene extends Phaser.Scene {
         const K = Phaser.Input.Keyboard.KeyCodes
         this.keys = kb.addKeys({ up: K.UP, down: K.DOWN, left: K.LEFT, right: K.RIGHT, w: K.W, a: K.A, s: K.S, d: K.D }) as typeof this.keys
         kb.addCapture([K.SPACE, K.UP, K.DOWN, K.LEFT, K.RIGHT])
-
-        SEED_KEYS.forEach((k, i) =>
-            kb.on(`keydown-${k}`, () => {
-                const id = CROP_IDS[i]!
-                if (this.shop.isOpen) this.buy(id)
-                else this.selectSeed(id)
-            }),
-        )
-        ITEM_KEYS.forEach((k, i) =>
-            kb.on(`keydown-${k}`, () => {
-                if (this.shop.isOpen) this.buy(ITEM_IDS[i]!)
-            }),
-        )
+        kb.on('keydown-SPACE', () => this.swing())
         kb.on('keydown-E', () => this.toggleShop())
-        kb.on('keydown-SPACE', () => this.interact())
-        kb.on('keydown-ENTER', () => this.interact())
         kb.on('keydown-ESC', () => {
-            if (this.shop.isOpen) this.shop.close()
-            this.setAiming(null)
+            this.shop.close()
+            this.aiming = null
         })
+        NUM_KEYS.forEach((k, i) =>
+            kb.on(`keydown-${k}`, () => {
+                if (this.shop.isOpen) this.buy(SHOP_ORDER[i]!)
+            }),
+        )
         this.input.mouse?.disableContextMenu()
         this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
-            if (p.rightButtonDown()) this.setAiming(null)
+            if (p.rightButtonDown()) {
+                this.aiming = null
+                return
+            }
+            if (!this.aiming) return
+            const spot = this.oppIsland.toWorld(p.worldX, p.worldY)
+            if (!spot) return this.showToast('Click on the enemy island')
+            net.send({ t: 'buy', id: this.aiming, x: spot.x, y: spot.y })
+            this.aiming = null
         })
     }
 
-    private get frozen() {
-        return (this.state?.you.effects.frozenMs ?? 0) > 0
+    private get stunned() {
+        return (this.latest?.you.effects.stunMs ?? 0) > 0
     }
 
     private toggleShop() {
-        if (this.ended || this.frozen) return
+        const me = this.latest?.you
+        if (this.ended || !me || this.stunned) return
         if (this.shop.isOpen) return this.shop.close()
-        if (!atShop(this.pos)) return this.showToast('Walk to the shop door first')
-        this.setAiming(null)
-        this.shop.open()
-        if (this.state) this.shop.update(this.state.you)
+        if (!atGate(this.pos)) return this.showToast('Walk to your castle gate to shop')
+        if (me.effects.fireMs > 0) return this.showToast('Your castle is on fire!')
+        this.aiming = null
+        this.shop.open(me)
     }
 
-    private buy(id: CropId | ItemId) {
+    private buy(id: ShopId) {
         if (this.ended) return
-        if (!isCrop(id) && ITEMS[id].targeted) {
+        if (SHOP[id].targeted) {
             this.shop.close()
-            this.setAiming(id)
+            this.aiming = id
             return
         }
         net.send({ t: 'buy', id })
-        if (isCrop(id)) this.selectSeed(id)
     }
 
-    private setAiming(id: ItemId | null) {
-        this.aiming = id
-        this.oppFarm.hoverColor = id ? 0xffe14a : null
-    }
-
-    /** Space: plant or harvest the plot you're standing on, or open the shop at its door. */
-    private interact() {
-        if (this.ended || this.shop.isOpen || this.frozen) return
-        const plot = plotInReach(this.pos)
-        if (plot !== null) return this.actOnPlot(plot)
-        if (atShop(this.pos)) this.toggleShop()
-    }
-
-    private actOnPlot(i: number) {
-        const p = this.state?.you.plots[i]
-        if (!p) return
-        if (p.crop) {
-            if (p.progress >= 1) net.send({ t: 'harvest', plot: i })
-            else this.showToast('Not ripe yet')
-            return
-        }
-        const crop = this.plantableSeed()
-        if (!crop) return this.showToast('No seeds! Buy some at the shop')
-        net.send({ t: 'plant', plot: i, crop })
-    }
-
-    /** The selected seed if we have one, otherwise any seed we're carrying. */
-    private plantableSeed(): CropId | undefined {
-        const seeds = this.state?.you.seeds
-        if (!seeds) return undefined
-        return seeds[this.selectedSeed] > 0 ? this.selectedSeed : CROP_IDS.find((id) => seeds[id] > 0)
-    }
-
-    private clickMyPlot(i: number) {
-        if (this.ended || this.shop.isOpen || this.frozen) return
-        if (plotInReach(this.pos) !== i) return this.showToast('Walk closer to that plot')
-        this.actOnPlot(i)
-    }
-
-    private clickOppPlot(i: number) {
-        if (this.ended || !this.aiming) return
-        net.send({ t: 'buy', id: this.aiming, plot: i })
-        this.setAiming(null)
+    private swing() {
+        const me = this.latest?.you
+        if (this.ended || !me || this.shop.isOpen || this.aiming || this.stunned) return
+        if (me.carrying) return this.showToast('Hands full! Deliver it to your castle')
+        const now = this.time.now
+        if (now - this.lastSwing < SWING_COOLDOWN_MS) return
+        const target = nearestTarget(me, this.pos)
+        if (!target) return
+        this.lastSwing = now
+        this.facing = target.x < this.pos.x ? 'left' : 'right'
+        this.me.act(toolFor(target.type === 'sheep' ? 'sheep' : RESOURCE_SPOTS[target.index]!.kind), this.facing)
+        net.send({ t: 'swing' })
     }
 
     // ---------- frame loop ----------
 
     override update(_time: number, deltaMs: number) {
         this.moveSelf(deltaMs / 1000)
-        this.renderOpponent()
+        this.renderRemote()
         this.updatePrompts()
     }
 
     private moveSelf(dt: number) {
+        const me = this.latest?.you
         const k = this.keys
         let dx = 0
         let dy = 0
-        const canMove = !this.ended && !this.shop.isOpen && !this.aiming && !this.frozen
+        const canMove = !this.ended && !this.shop.isOpen && !this.aiming && !this.stunned && !this.me.busy
         if (canMove) {
             if (k.left.isDown || k.a.isDown) dx -= 1
             if (k.right.isDown || k.d.isDown) dx += 1
@@ -301,12 +274,15 @@ export class GameScene extends Phaser.Scene {
         this.moving = dx !== 0 || dy !== 0
         if (this.moving) {
             const len = Math.hypot(dx, dy)
-            const step = PLAYER_SPEED * dt
-            this.pos = collide(this.pos, { x: this.pos.x + (dx / len) * step, y: this.pos.y + (dy / len) * step })
-            this.facing = Math.abs(dx) >= Math.abs(dy) && dx !== 0 ? (dx > 0 ? 'right' : 'left') : dy > 0 ? 'down' : 'up'
+            const step = speedFor(me?.upgrades.boots ?? false) * dt
+            const next = walk(this.pos, { x: this.pos.x + (dx / len) * step, y: this.pos.y + (dy / len) * step })
+            this.moving = distance(next, this.pos) > 0.01
+            this.pos = next
+            if (dx !== 0) this.facing = dx > 0 ? 'right' : 'left'
         }
-        this.me.apply({ facing: this.facing, moving: this.moving })
-        this.me.setPosition(this.myFarm.sx(this.pos.x), this.myFarm.sy(this.pos.y))
+        this.me.pose(this.facing, this.moving, me?.carrying ?? null)
+        this.me.setStunned(this.stunned)
+        this.me.setPosition(this.myIsland.sx(this.pos.x), this.myIsland.sy(this.pos.y))
 
         // Stream position at the tick rate while moving, plus once when stopping.
         const now = performance.now()
@@ -317,151 +293,177 @@ export class GameScene extends Phaser.Scene {
         }
     }
 
-    private renderOpponent() {
-        const snaps = this.oppSnaps
+    /** Blend the two snapshots around (now - delay) for everything we don't control. */
+    private renderRemote() {
+        const snaps = this.snaps
         if (!snaps.length) return
         const renderAt = performance.now() - INTERP_DELAY_MS
         while (snaps.length > 2 && snaps[1]!.at <= renderAt) snaps.shift()
-        const [a, b] = snaps
-        let x = a!.x
-        let y = a!.y
-        let latest: Snapshot = a!
-        if (b && renderAt > a!.at) {
-            const t = Math.min(1, (renderAt - a!.at) / (b.at - a!.at || 1))
-            x = a!.x + (b.x - a!.x) * t
-            y = a!.y + (b.y - a!.y) * t
-            latest = t >= 0.5 ? b : a!
-        }
-        this.opp.apply(latest)
-        this.opp.setPosition(this.oppFarm.sx(x), this.oppFarm.sy(y))
+        const a = snaps[0]!
+        const b = snaps[1] ?? a
+        const t = b === a ? 1 : Phaser.Math.Clamp((renderAt - a.at) / (b.at - a.at), 0, 1)
+
+        const oa = a.msg.opponent
+        const ob = b.msg.opponent
+        const pawn = lerpUnit(oa.pawn, ob.pawn, t)
+        this.opp.pose(pawn.facing, pawn.moving, ob.carrying)
+        this.opp.setStunned(ob.effects.stunMs > 0)
+        this.opp.setPosition(this.oppIsland.sx(pawn.x), this.oppIsland.sy(pawn.y))
+
+        this.myIsland.renderUnits(lerpSheep(a.msg.you.sheep, b.msg.you.sheep, t), lerpRaider(a.msg.you.raider, b.msg.you.raider, t))
+        this.oppIsland.renderUnits(lerpSheep(oa.sheep, ob.sheep, t), lerpRaider(oa.raider, ob.raider, t))
     }
 
     private updatePrompts() {
-        if (this.ended) return
-        let prompt = ''
-        const plot = this.shop.isOpen ? null : plotInReach(this.pos)
-        this.myFarm.setFocus(plot)
-        if (this.aiming) {
-            prompt = ''
-            this.hint.setText(`${ITEMS[this.aiming].name}: click an enemy crop. ESC to cancel`)
-        } else if (this.frozen) {
-            prompt = 'FROZEN!'
-            this.hint.setText('')
-        } else {
-            if (plot !== null) {
-                const p = this.state?.you.plots[plot]
-                if (p?.crop) prompt = p.progress >= 1 ? '[SPACE] Harvest' : ''
-                else {
-                    const crop = this.plantableSeed()
-                    prompt = crop ? `[SPACE] Plant ${CROPS[crop].name}` : 'No seeds - visit the shop'
-                }
-            } else if (atShop(this.pos) && !this.shop.isOpen) {
-                prompt = '[E] Shop'
-            }
-            this.hint.setText('WASD move  SPACE plant/harvest  E shop  1-4 seed')
+        const me = this.latest?.you
+        if (!me || this.ended) {
+            this.me.setPrompt('')
+            this.myIsland.setFocus(null)
+            return
         }
+        const target = me.carrying || this.shop.isOpen ? null : nearestTarget(me, this.pos)
+        this.myIsland.setFocus(target)
+        let prompt = ''
+        if (this.stunned) prompt = 'STUNNED!'
+        else if (me.carrying) prompt = atGate(this.pos) && me.effects.fireMs > 0 ? 'Castle on fire!' : `Bring ${LOADS[me.carrying].name} home!`
+        else if (target) prompt = `SPACE  ${target.type === 'sheep' ? 'Catch' : RESOURCE_SPOTS[target.index]!.kind === 'tree' ? 'Chop' : 'Mine'}`
+        else if (atGate(this.pos) && !this.shop.isOpen) prompt = 'E  Shop'
         this.me.setPrompt(prompt)
+
+        const g = this.aimRing.clear()
+        if (this.aiming) {
+            const p = this.input.activePointer
+            if (this.oppIsland.toWorld(p.worldX, p.worldY)) {
+                g.fillStyle(0xff3b2e, 0.18).fillCircle(p.worldX, p.worldY, KEG_RADIUS)
+                g.lineStyle(4, 0xff3b2e, 1).strokeCircle(p.worldX, p.worldY, KEG_RADIUS)
+            }
+            this.hint.setText(`${SHOP[this.aiming].name}: click a spot on their island  •  ESC to cancel`)
+        } else {
+            this.hint.setText('WASD move  •  SPACE chop / mine / catch  •  E shop at castle')
+        }
     }
 
     // ---------- server messages ----------
 
     private onState(msg: StateMsg) {
-        this.state = msg
-        this.myFarm.update(msg.you)
-        this.oppFarm.update(msg.opponent)
-        this.myMoney.setText(`$${msg.you.money}`)
-        this.oppMoney.setText(`$${msg.opponent.money}`)
+        this.snaps.push({ at: performance.now(), msg })
+        if (this.snaps.length > 30) this.snaps.shift()
+        this.myIsland.update(msg.you)
+        this.oppIsland.update(msg.opponent)
+        this.updateHud('you', msg.you)
+        this.updateHud('opponent', msg.opponent)
+        if (this.shop.isOpen) {
+            if (msg.you.effects.fireMs > 0 || msg.you.effects.stunMs > 0) this.shop.close()
+            else this.shop.update(msg.you)
+        }
+
         const s = Math.ceil(msg.timeLeftMs / 1000)
         this.timerText.setText(`${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`)
         this.timerText.setColor(s <= 10 ? '#ff6b5b' : '#ffffff')
-        if (this.shop.isOpen) this.shop.update(msg.you)
-        this.refreshSeedBar()
-        this.me.setTint(msg.you.effects.frozenMs > 0 ? 0x9fdcff : null)
-        this.opp.setTint(msg.opponent.effects.frozenMs > 0 ? 0x9fdcff : null)
 
-        // Our own avatar is predicted locally; only correct it when the server disagrees a lot.
-        if (distance(this.pos, msg.you.avatar) > RECONCILE_PX) this.pos = { x: msg.you.avatar.x, y: msg.you.avatar.y }
-
-        this.oppSnaps.push({ ...msg.opponent.avatar, at: performance.now() })
-        if (this.oppSnaps.length > 20) this.oppSnaps.shift()
+        // Our worker is predicted locally; only correct it when the server disagrees a lot.
+        if (distance(this.pos, msg.you.pawn) > RECONCILE_PX) this.pos = { x: msg.you.pawn.x, y: msg.you.pawn.y }
     }
 
     private onEvent(e: GameEvent) {
-        const mine = e.by === 'you'
-        const ownFarm = mine ? this.myFarm : this.oppFarm
-        const enemyFarm = mine ? this.oppFarm : this.myFarm
-
-        if (e.kind === 'harvest') {
-            const { x, y } = ownFarm.plotScreen(e.plot)
-            floatText(this, x, y - 40, `+$${e.amount}`, '#ffe066')
-            return
+        const mine = e.island === 'you'
+        const island = mine ? this.myIsland : this.oppIsland
+        const pawn = mine ? this.me : this.opp
+        switch (e.kind) {
+            case 'swing': {
+                if (e.target === 'sheep') island.hitSheep(e.index)
+                else island.hitResource(e.index)
+                if (!mine) {
+                    const tx = e.target === 'sheep' ? this.latest?.opponent.sheep[e.index]?.x : RESOURCE_SPOTS[e.index]!.x
+                    const facing: Facing = tx !== undefined && island.sx(tx) < pawn.x ? 'left' : 'right'
+                    pawn.act(toolFor(e.target), facing)
+                }
+                return
+            }
+            case 'gather':
+                this.popIcon(`res-${e.load}`, pawn.x, pawn.y - 70)
+                return
+            case 'deposit':
+                floatText(this, island.gate.x, island.gate.y - 60, `+${e.amount}`, '#ffe066', 36)
+                this.flyCoins(island.gate, this.huds[e.island].coin, Math.ceil(e.amount / 10))
+                return
+            case 'buy': {
+                const item = SHOP[e.item]
+                const byMe = item.kind === 'attack' ? !mine : mine
+                this.pushLog(`${byMe ? 'You' : this.opponentName}: ${item.name}`)
+                if (item.kind === 'attack' && mine) this.showToast(`Incoming ${item.name}!`, '#ff9b8a')
+                if (item.kind === 'upgrade') fx(this, 'dust', pawn.x, pawn.y, 1.5)
+                if (e.item === 'fire') this.cameras.main.shake(150, mine ? 0.004 : 0.002)
+                return
+            }
+            case 'explode':
+                island.explode(e.x, e.y)
+                this.cameras.main.shake(mine ? 380 : 200, mine ? 0.012 : 0.005)
+                return
+            case 'smack':
+                pawn.flash()
+                this.cameras.main.shake(160, mine ? 0.008 : 0.003)
+                floatText(this, pawn.x, pawn.y - 90, 'BONK!', '#ffffff', 30)
+                return
+            case 'drop':
+                this.dropIcon(`res-${e.load}`, pawn.x, pawn.y - 60)
+                return
+            case 'shot':
+                island.shoot(e.x, e.y, mine ? 'blue' : 'red')
+                this.pushLog(`${mine ? 'Your' : `${this.opponentName}'s`} tower shot a raider`)
+                return
         }
-        if (e.kind === 'wither') {
-            const { x, y } = ownFarm.plotScreen(e.plot)
-            floatText(this, x, y - 40, 'withered', '#d0a080', 12)
-            return
-        }
-
-        const item = ITEMS[e.item]
-        this.log(`${mine ? 'You' : this.opponentName}: ${item.name}${e.blocked ? ' (blocked)' : ''}`)
-        if (item.kind === 'buff') {
-            const { x, y } = ownFarm.center
-            this.burst(x, y, e.item, 8)
-            floatText(this, x, y + 50, `${item.name}!`, '#9cff8a', 18)
-            return
-        }
-        const { x, y } = e.plot !== undefined ? enemyFarm.plotScreen(e.plot) : enemyFarm.center
-        if (e.blocked) {
-            this.burst(x, y, 'scarecrow', 8)
-            floatText(this, x, y + 50, 'Blocked!', '#9fd8ff', 18)
-            return
-        }
-        this.burst(x, y, e.item, e.plot !== undefined ? 6 : 12, e.item === 'tornado')
-        if (!mine && (e.item === 'tornado' || e.item === 'lightning')) this.cameras.main.shake(e.item === 'tornado' ? 500 : 180, 0.008)
-        if (e.item === 'lightning') this.cameras.main.flash(120, 255, 255, 200)
     }
 
-    /** Pops a big pixel sprite over a spot, then fades it out. */
-    private burst(x: number, y: number, key: string, scale: number, spin = false) {
-        const img = this.add.image(x, y, key).setDepth(7000).setScale(scale / 3)
-        this.tweens.add({
-            targets: img,
-            scale,
-            angle: spin ? 720 : 0,
-            alpha: { from: 1, to: 0 },
-            duration: 900,
-            ease: 'Cubic.easeOut',
-            onComplete: () => img.destroy(),
-        })
+    // ---------- juice ----------
+
+    private popIcon(key: string, x: number, y: number) {
+        const img = this.add.image(x, y, key).setDepth(9500).setScale(0.2)
+        this.tweens.add({ targets: img, scale: 0.8, y: y - 30, duration: 300, ease: 'Back.easeOut' })
+        this.tweens.add({ targets: img, alpha: 0, delay: 500, duration: 250, onComplete: () => img.destroy() })
     }
 
-    private log(line: string) {
-        this.feed = [line, ...this.feed].slice(0, 4)
-        this.feedText.setText(this.feed.join('\n'))
+    private dropIcon(key: string, x: number, y: number) {
+        const img = this.add.image(x, y, key).setDepth(9500).setScale(0.7)
+        this.tweens.add({ targets: img, x: x + 50, y: y + 60, angle: 200, alpha: 0, duration: 650, ease: 'Quad.easeIn', onComplete: () => img.destroy() })
+        floatText(this, x, y - 20, 'dropped!', '#ffb36b', 22)
     }
 
-    private showToast(message: string) {
+    private flyCoins(from: { x: number; y: number }, to: Phaser.GameObjects.Image, count: number) {
+        for (let i = 0; i < Math.min(count, 6); i++) {
+            const coin = this.add.image(from.x + Phaser.Math.Between(-20, 20), from.y - 30, 'icon-coin').setScale(0.5).setDepth(26000)
+            this.tweens.add({ targets: coin, x: to.x, y: to.y, scale: 0.35, delay: i * 60, duration: 520, ease: 'Cubic.easeIn', onComplete: () => coin.destroy() })
+        }
+    }
+
+    private pushLog(line: string) {
+        this.logText.setText(line).setScale(1.15)
+        this.tweens.add({ targets: this.logText, scale: 1, duration: 200 })
+    }
+
+    private showToast(message: string, color = '#ffd0c4') {
         this.tweens.killTweensOf(this.toast)
-        this.toast.setText(message).setAlpha(1)
-        this.tweens.add({ targets: this.toast, alpha: 0, delay: 900, duration: 400 })
+        this.toast.setText(message).setColor(color).setAlpha(1)
+        this.tweens.add({ targets: this.toast, alpha: 0, delay: 1100, duration: 400 })
     }
 
     private onEnd(msg: EndMsg) {
         this.ended = true
         this.shop.close()
-        this.setAiming(null)
-        this.me.setPrompt('')
-        const title = { win: 'YOU WIN!', lose: 'YOU LOSE', draw: 'DRAW' }[msg.result]
-        const color = { win: '#c8f56b', lose: '#ff7b6b', draw: '#ffffff' }[msg.result]
-        const sub = msg.reason === 'opponent_left' ? 'Your opponent left the farm.' : `$${msg.yourMoney}  vs  $${msg.opponentMoney}`
+        this.aiming = null
+        const title = { win: 'VICTORY!', lose: 'DEFEAT', draw: 'DRAW' }[msg.result]
+        const color = msg.result === 'win' ? 'blue' : msg.result === 'lose' ? 'red' : 'yellow'
+        const sub = msg.reason === 'opponent_left' ? 'Your rival fled the field.' : `${msg.yourGold}  vs  ${msg.opponentGold} gold`
 
-        this.add.rectangle(640, 360, 1280, 720, 0x000000, 0.7).setDepth(10000).setInteractive()
-        const objs = [
-            text(this, 640, 250, title, 56, color).setOrigin(0.5).setStroke('#000000', 10),
-            text(this, 640, 340, sub, 20, '#ffe066').setOrigin(0.5),
-        ]
-        const b = button(this, 640, 450, 340, 64, 'Back to menu', '#c8f56b', () => this.scene.start('menu'))
-        for (const o of [...objs, ...b.items]) o.setDepth(10001)
+        const d = 40000
+        this.add.rectangle(W / 2, H / 2, W, H, 0x0b1a24, 0.6).setDepth(d).setInteractive()
+        tiledPanel(this, 'banner', W / 2, H / 2 + 20, 620, 420).setDepth(d)
+        const r = ribbon(this, color, W / 2, H / 2 - 170, 520, title, 52)
+        r.bg.setDepth(d + 1)
+        r.text.setDepth(d + 2)
+        this.add.image(W / 2, H / 2 - 30, msg.result === 'lose' ? 'avatar-red' : 'avatar-blue').setScale(0.6).setDepth(d + 1)
+        text(this, W / 2, H / 2 + 80, sub, 34, '#5a3a1a').setOrigin(0.5).setDepth(d + 1)
+        button(this, W / 2, H / 2 + 170, 320, 90, 'Back to menu', 'blue', () => this.scene.start('menu')).setDepth(d + 2)
     }
 
     private onDisconnect() {
@@ -472,13 +474,22 @@ export class GameScene extends Phaser.Scene {
     }
 }
 
-/** Clamp to the field and slide along the shop building instead of walking through it. */
-function collide(from: { x: number; y: number }, to: { x: number; y: number }) {
-    const blocked = (x: number, y: number) =>
-        x > SHOP_COLLIDER.minX && x < SHOP_COLLIDER.maxX && y > SHOP_COLLIDER.minY && y < SHOP_COLLIDER.maxY
-    let x = Phaser.Math.Clamp(to.x, BOUNDS.minX, BOUNDS.maxX)
-    let y = Phaser.Math.Clamp(to.y, BOUNDS.minY, BOUNDS.maxY)
-    if (blocked(x, from.y)) x = from.x
-    if (blocked(x, y)) y = from.y
-    return { x, y }
+function toolFor(target: 'tree' | 'gold' | 'sheep'): PawnAction {
+    return target === 'tree' ? 'axe' : target === 'gold' ? 'pickaxe' : 'knife'
+}
+
+function lerpUnit<T extends UnitState>(a: T, b: T, t: number): T {
+    return { ...b, x: a.x + (b.x - a.x) * t, y: a.y + (b.y - a.y) * t }
+}
+
+function lerpSheep(a: SheepState[], b: SheepState[], t: number) {
+    return b.map((s, i) => {
+        const prev = a[i]
+        // Don't slide a respawned sheep across the meadow.
+        return prev && prev.alive && s.alive ? lerpUnit(prev, s, t) : s
+    })
+}
+
+function lerpRaider(a: RaiderState | null, b: RaiderState | null, t: number) {
+    return a && b ? lerpUnit(a, b, t) : b
 }

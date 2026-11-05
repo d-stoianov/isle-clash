@@ -1,33 +1,47 @@
 import {
-    atShop,
+    atGate,
     BOUNDS,
-    CROP_IDS,
-    CROPS,
+    clamp,
     distance,
-    DROUGHT_DURATION_MS,
-    DROUGHT_GROWTH_MULTIPLIER,
-    FREEZE_DURATION_MS,
-    isCrop,
-    isItem,
-    ITEM_IDS,
-    ITEMS,
+    FIRE_MS,
+    isShopId,
+    nearestTarget,
+    KEG_FUSE_MS,
+    KEG_RADIUS,
+    KEG_STUN_MS,
+    LOADS,
     MATCH_DURATION_MS,
-    PLAYER_SPEED,
-    PLOT_COUNT,
-    plotCenter,
-    PLOT_RANGE,
-    RIPE_WINDOW_MS,
-    SCARECROW_DURATION_MS,
+    MEADOW,
+    RAIDER_LIFETIME_MS,
+    RAIDER_REACH,
+    RAIDER_SPEED,
+    RAIDER_STUN_MS,
+    RAIDER_WINDUP_MS,
+    REGROW_MS,
+    RESOURCE_SPOTS,
+    SHEEP_COUNT,
+    SHEEP_FLEE_RANGE,
+    SHEEP_FLEE_SPEED,
+    SHEEP_SPEED,
+    SHOP,
+    SHOP_IDS,
     SPAWN,
-    STARTING_MONEY,
+    speedFor,
+    STARTING_GOLD,
+    SWING_COOLDOWN_MS,
+    SWINGS,
     TICK_RATE,
-    type CropId,
+    TOWER_MS,
+    TOWER_SHOT_DELAY_MS,
+    type Facing,
     type GameAction,
     type GameEvent,
-    type ItemId,
+    type LoadKind,
     type PlayerState,
-    type PlotState,
+    type Point,
     type ServerMessage,
+    type SheepState,
+    type ShopId,
     type Side,
 } from '@gogrow/shared'
 
@@ -37,52 +51,87 @@ export interface Participant {
     send(msg: ServerMessage): void
 }
 
+type PendingEvent = DistributiveOmit<GameEvent, 'island'>
+
 interface Seat {
     participant: Participant
     state: PlayerState
-    /** events queued for this seat, flushed every tick */
-    events: GameEvent[]
     lastMoveAt: number
+    lastSwingAt: number
+    /** per-sheep wander target */
+    sheepGoals: Point[]
+    /** per-sheep ms until a caught sheep respawns */
+    sheepRespawnMs: number[]
+    raiderWindupMs: number
+    raiderAge: number
 }
 
-/** Extra reach granted for network jitter between what the client saw and what the server has. */
-const RANGE_SLACK = 6
-const FACINGS = new Set(['down', 'up', 'left', 'right'])
+/** Extra reach for network jitter between what the client saw and what the server has. */
+const RANGE_SLACK = 10
+const DT_CAP_MS = 250
+// Dev/playtest overrides, e.g. START_GOLD=500 MATCH_MS=30000 npm run dev:server
+const START_GOLD = Number(process.env.START_GOLD ?? STARTING_GOLD)
+const MATCH_MS = Number(process.env.MATCH_MS ?? MATCH_DURATION_MS)
+let kegIds = 1
+
+function randomMeadowPoint(): Point {
+    return {
+        x: MEADOW.minX + Math.random() * (MEADOW.maxX - MEADOW.minX),
+        y: MEADOW.minY + Math.random() * (MEADOW.maxY - MEADOW.minY),
+    }
+}
+
+function freshSheep(): SheepState {
+    const p = randomMeadowPoint()
+    return { ...p, facing: 'right', moving: false, alive: true, hp: SWINGS.sheep.base }
+}
 
 function freshPlayer(name: string): PlayerState {
     return {
         name,
-        money: STARTING_MONEY,
-        avatar: { ...SPAWN, facing: 'down', moving: false },
-        seeds: Object.fromEntries(CROP_IDS.map((id) => [id, 0])) as Record<CropId, number>,
-        plots: Array.from({ length: PLOT_COUNT }, () => ({ crop: null, progress: 0, witherInMs: 0 })),
-        effects: { droughtMs: 0, frozenMs: 0, scarecrowMs: 0 },
-        cooldowns: Object.fromEntries(ITEM_IDS.map((id) => [id, 0])) as Record<ItemId, number>,
+        gold: START_GOLD,
+        pawn: { ...SPAWN, facing: 'right', moving: false },
+        carrying: null,
+        upgrades: { axe: false, pickaxe: false, boots: false },
+        cooldowns: Object.fromEntries(SHOP_IDS.map((id) => [id, 0])) as Record<ShopId, number>,
+        effects: { stunMs: 0, fireMs: 0, towerMs: 0 },
+        resources: RESOURCE_SPOTS.map((r) => {
+            const hp = SWINGS[r.kind].base
+            return { kind: r.kind, hp, maxHp: hp, regrowMs: 0 }
+        }),
+        sheep: Array.from({ length: SHEEP_COUNT }, freshSheep),
+        raider: null,
+        kegs: [],
     }
 }
 
 export class Match {
     private readonly seats: [Seat, Seat]
-    private timeLeftMs = MATCH_DURATION_MS
+    private timeLeftMs = MATCH_MS
     private timer: ReturnType<typeof setInterval> | null = null
     private lastTick = 0
     private finished = false
+    private pending: { island: Seat; event: PendingEvent }[] = []
     onFinish: (() => void) | null = null
 
     constructor(a: Participant, b: Participant) {
         const seat = (participant: Participant): Seat => ({
             participant,
             state: freshPlayer(participant.name),
-            events: [],
             lastMoveAt: performance.now(),
+            lastSwingAt: 0,
+            sheepGoals: Array.from({ length: SHEEP_COUNT }, randomMeadowPoint),
+            sheepRespawnMs: Array.from({ length: SHEEP_COUNT }, () => 0),
+            raiderWindupMs: 0,
+            raiderAge: 0,
         })
         this.seats = [seat(a), seat(b)]
     }
 
     start() {
         const [a, b] = this.seats
-        a.participant.send({ t: 'start', opponentName: b.state.name, durationMs: MATCH_DURATION_MS })
-        b.participant.send({ t: 'start', opponentName: a.state.name, durationMs: MATCH_DURATION_MS })
+        a.participant.send({ t: 'start', opponentName: b.state.name, durationMs: MATCH_MS })
+        b.participant.send({ t: 'start', opponentName: a.state.name, durationMs: MATCH_MS })
         this.lastTick = performance.now()
         for (const s of this.seats) s.lastMoveAt = this.lastTick
         this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE)
@@ -107,168 +156,316 @@ export class Match {
         if (error) p.send({ t: 'error', message: error })
     }
 
+    // ---------- actions ----------
+
     private apply(me: Seat, msg: GameAction): string | null {
         if (!isValidAction(msg)) return 'Invalid move'
         const s = me.state
-        if (s.effects.frozenMs > 0) {
-            // Movement is dropped silently while frozen; the next snapshot snaps the client back.
-            return msg.t === 'move' ? null : 'You are frozen!'
+        if (s.effects.stunMs > 0) {
+            // Movement is dropped silently while stunned; the next snapshot snaps the client back.
+            return msg.t === 'move' ? null : 'You are stunned!'
         }
-
         switch (msg.t) {
             case 'move':
                 this.move(me, msg)
                 return null
+            case 'swing':
+                return this.swing(me)
             case 'buy':
-                if (!atShop(s.avatar, RANGE_SLACK)) return 'Walk to the shop first'
-                return isCrop(msg.id) ? this.buySeed(s, msg.id) : this.useItem(me, msg.id, msg.plot)
-            case 'plant': {
-                const plot = s.plots[msg.plot]!
-                if (!this.inReach(s, msg.plot)) return 'Too far away'
-                if (plot.crop) return 'Plot is occupied'
-                if (s.seeds[msg.crop] <= 0) return `No ${CROPS[msg.crop].name} seeds, visit the shop`
-                s.seeds[msg.crop]--
-                plot.crop = msg.crop
-                plot.progress = 0
-                plot.witherInMs = 0
-                return null
-            }
-            case 'harvest': {
-                const plot = s.plots[msg.plot]!
-                if (!this.inReach(s, msg.plot)) return 'Too far away'
-                if (!plot.crop) return 'Nothing to harvest'
-                if (plot.progress < 1) return 'Not ripe yet'
-                const amount = CROPS[plot.crop].sellPrice
-                s.money += amount
-                clearPlot(plot)
-                this.emit(me, { kind: 'harvest', plot: msg.plot, amount })
-                return null
-            }
+                return this.buy(me, msg.id, msg.x, msg.y)
         }
     }
 
     /**
-     * Clients move their own avatar for instant response. The server only checks the
+     * Clients move their own worker for instant response. The server only checks the
      * move is physically possible (speed + bounds) and clamps it otherwise.
      */
     private move(me: Seat, msg: Extract<GameAction, { t: 'move' }>) {
         const now = performance.now()
-        const elapsed = Math.min(250, now - me.lastMoveAt)
+        const elapsed = Math.min(DT_CAP_MS, now - me.lastMoveAt)
         me.lastMoveAt = now
-        const a = me.state.avatar
-        const maxStep = (PLAYER_SPEED * elapsed) / 1000 + 8
+        const p = me.state.pawn
+        const maxStep = (speedFor(me.state.upgrades.boots) * elapsed) / 1000 + 10
         let x = clamp(msg.x, BOUNDS.minX, BOUNDS.maxX)
         let y = clamp(msg.y, BOUNDS.minY, BOUNDS.maxY)
-        const d = distance(a, { x, y })
+        const d = distance(p, { x, y })
         if (d > maxStep) {
-            x = a.x + ((x - a.x) / d) * maxStep
-            y = a.y + ((y - a.y) / d) * maxStep
+            x = p.x + ((x - p.x) / d) * maxStep
+            y = p.y + ((y - p.y) / d) * maxStep
         }
-        a.x = x
-        a.y = y
-        a.facing = msg.facing
-        a.moving = msg.moving
+        p.x = x
+        p.y = y
+        p.facing = msg.facing
+        p.moving = msg.moving
+        this.tryDeposit(me)
     }
 
-    private inReach(s: PlayerState, plot: number) {
-        return distance(s.avatar, plotCenter(plot)) <= PLOT_RANGE + RANGE_SLACK
-    }
-
-    private buySeed(s: PlayerState, id: CropId): string | null {
-        const crop = CROPS[id]
-        if (s.money < crop.cost) return 'Not enough money'
-        s.money -= crop.cost
-        s.seeds[id]++
-        return null
-    }
-
-    private useItem(me: Seat, itemId: ItemId, plotIndex?: number): string | null {
-        const item = ITEMS[itemId]
+    /** One tool swing at the nearest thing in reach: a tree, a gold rock or a sheep. */
+    private swing(me: Seat): string | null {
+        const now = performance.now()
+        if (now - me.lastSwingAt < SWING_COOLDOWN_MS) return null
         const s = me.state
-        if (s.cooldowns[itemId] > 0) return `${item.name} is on cooldown`
-        if (s.money < item.cost) return 'Not enough money'
+        if (s.carrying) return 'Hands full! Bring it to your castle'
+        const target = nearestTarget(s, s.pawn, RANGE_SLACK)
+        if (!target) return null
+        me.lastSwingAt = now
+        s.pawn.facing = target.x < s.pawn.x ? 'left' : 'right'
 
-        const opp = this.other(me)
-        if (item.targeted) {
-            const target = plotIndex === undefined ? undefined : opp.state.plots[plotIndex]
-            if (!target) return 'Pick an enemy plot'
-            if (!target.crop) return 'That plot is empty'
-        }
-
-        s.money -= item.cost
-        s.cooldowns[itemId] = item.cooldownMs
-
-        if (item.kind === 'buff') {
-            if (itemId === 'fertilizer') {
-                for (const p of s.plots) if (p.crop && p.progress < 1) ripen(p)
-            } else if (itemId === 'scarecrow') {
-                s.effects.scarecrowMs = SCARECROW_DURATION_MS
+        if (target.type === 'sheep') {
+            const sheep = s.sheep[target.index]!
+            this.emit(me, { kind: 'swing', target: 'sheep', index: target.index })
+            sheep.hp--
+            sheep.moving = false
+            if (sheep.hp <= 0) {
+                sheep.alive = false
+                sheep.hp = 0
+                me.sheepRespawnMs[target.index] = REGROW_MS.sheep
+                this.gather(me, 'meat')
             }
-            this.emit(me, { kind: 'item', item: itemId, blocked: false })
             return null
         }
 
-        const o = opp.state
-        const blocked = o.effects.scarecrowMs > 0
-        if (blocked) {
-            o.effects.scarecrowMs = 0
-        } else {
-            switch (itemId) {
-                case 'lightning':
-                    clearPlot(o.plots[plotIndex!]!)
-                    break
-                case 'drought':
-                    o.effects.droughtMs = DROUGHT_DURATION_MS
-                    break
-                case 'freeze':
-                    o.effects.frozenMs = FREEZE_DURATION_MS
-                    o.avatar.moving = false
-                    break
-                case 'tornado':
-                    o.plots.forEach(clearPlot)
-                    break
-            }
+        const res = s.resources[target.index]!
+        this.emit(me, { kind: 'swing', target: res.kind, index: target.index })
+        res.hp--
+        if (res.hp <= 0) {
+            res.hp = 0
+            res.regrowMs = REGROW_MS[res.kind]
+            this.gather(me, res.kind === 'tree' ? 'wood' : 'gold')
         }
-        this.emit(me, { kind: 'item', item: itemId, plot: plotIndex, blocked })
         return null
     }
 
+    private gather(me: Seat, load: LoadKind) {
+        me.state.carrying = load
+        this.emit(me, { kind: 'gather', load })
+    }
+
+    private tryDeposit(me: Seat) {
+        const s = me.state
+        if (!s.carrying || s.effects.fireMs > 0 || !atGate(s.pawn, RANGE_SLACK)) return
+        const amount = LOADS[s.carrying].value
+        s.gold += amount
+        this.emit(me, { kind: 'deposit', load: s.carrying, amount })
+        s.carrying = null
+    }
+
+    private buy(me: Seat, id: ShopId, tx?: number, ty?: number): string | null {
+        const s = me.state
+        const item = SHOP[id]
+        if (!atGate(s.pawn, RANGE_SLACK)) return 'Walk to your castle to shop'
+        if (s.effects.fireMs > 0) return 'Your castle is on fire!'
+        if (item.kind === 'upgrade' && s.upgrades[id as keyof typeof s.upgrades]) return 'Already bought'
+        if (s.cooldowns[id] > 0) return `${item.name} is not ready yet`
+        if (s.gold < item.cost) return 'Not enough gold'
+        if (item.targeted && (tx === undefined || ty === undefined)) return 'Pick a target'
+
+        const opp = this.other(me)
+        const o = opp.state
+        if (id === 'raider' && o.raider) return 'A raider is already there'
+
+        s.gold -= item.cost
+        s.cooldowns[id] = item.cooldownMs
+        this.emit(item.kind === 'attack' ? opp : me, { kind: 'buy', item: id })
+
+        switch (id) {
+            case 'axe':
+            case 'pickaxe':
+            case 'boots':
+                s.upgrades[id] = true
+                if (id === 'axe') this.applyUpgrade(s, 'tree')
+                if (id === 'pickaxe') this.applyUpgrade(s, 'gold')
+                break
+            case 'tower':
+                s.effects.towerMs = TOWER_MS
+                break
+            case 'fire':
+                o.effects.fireMs = FIRE_MS
+                break
+            case 'keg':
+                o.kegs.push({
+                    id: kegIds++,
+                    x: clamp(tx!, BOUNDS.minX, BOUNDS.maxX),
+                    y: clamp(ty!, BOUNDS.minY, BOUNDS.maxY),
+                    fuseMs: KEG_FUSE_MS,
+                })
+                break
+            case 'raider': {
+                // Land on the island edge farthest from their worker.
+                const x = o.pawn.x < BOUNDS.maxX / 2 ? BOUNDS.maxX : BOUNDS.minX
+                o.raider = { x, y: clamp(o.pawn.y, 300, BOUNDS.maxY), facing: 'left', moving: true, attacking: false, lifeMs: RAIDER_LIFETIME_MS }
+                opp.raiderWindupMs = 0
+                opp.raiderAge = 0
+                break
+            }
+        }
+        return null
+    }
+
+    private applyUpgrade(s: PlayerState, kind: 'tree' | 'gold') {
+        const max = SWINGS[kind].upgraded
+        for (const r of s.resources) {
+            if (r.kind !== kind) continue
+            r.maxHp = max
+            r.hp = Math.min(r.hp, max)
+            if (r.regrowMs === 0 && r.hp === 0) r.hp = max
+        }
+    }
+
+    // ---------- simulation ----------
+
     private tick() {
         const now = performance.now()
-        const dt = now - this.lastTick
+        const dt = Math.min(DT_CAP_MS, now - this.lastTick)
         this.lastTick = now
         this.timeLeftMs = Math.max(0, this.timeLeftMs - dt)
 
         for (const seat of this.seats) {
             const s = seat.state
-            const growth = s.effects.droughtMs > 0 ? DROUGHT_GROWTH_MULTIPLIER : 1
-            s.plots.forEach((plot, i) => {
-                if (!plot.crop) return
-                if (plot.progress < 1) {
-                    plot.progress = Math.min(1, plot.progress + (dt * growth) / CROPS[plot.crop].growMs)
-                    if (plot.progress >= 1) ripen(plot)
-                } else {
-                    plot.witherInMs -= dt
-                    if (plot.witherInMs <= 0) {
-                        clearPlot(plot)
-                        this.emit(seat, { kind: 'wither', plot: i })
-                    }
-                }
-            })
-            s.effects.droughtMs = Math.max(0, s.effects.droughtMs - dt)
-            s.effects.frozenMs = Math.max(0, s.effects.frozenMs - dt)
-            s.effects.scarecrowMs = Math.max(0, s.effects.scarecrowMs - dt)
-            for (const id of ITEM_IDS) s.cooldowns[id] = Math.max(0, s.cooldowns[id] - dt)
+            s.effects.stunMs = Math.max(0, s.effects.stunMs - dt)
+            s.effects.fireMs = Math.max(0, s.effects.fireMs - dt)
+            s.effects.towerMs = Math.max(0, s.effects.towerMs - dt)
+            for (const id of SHOP_IDS) s.cooldowns[id] = Math.max(0, s.cooldowns[id] - dt)
+
+            for (const r of s.resources) {
+                if (r.regrowMs <= 0) continue
+                r.regrowMs = Math.max(0, r.regrowMs - dt)
+                if (r.regrowMs === 0) r.hp = r.maxHp
+            }
+            this.tickSheep(seat, dt)
+            this.tickKegs(seat, dt)
+            this.tickRaider(seat, dt)
+            // Deliveries also happen if the worker stands still at the gate once a fire ends.
+            this.tryDeposit(seat)
         }
 
         this.broadcast()
 
         if (this.timeLeftMs <= 0) {
             const [a, b] = this.seats
-            const winner = a.state.money === b.state.money ? null : a.state.money > b.state.money ? a : b
+            const winner = a.state.gold === b.state.gold ? null : a.state.gold > b.state.gold ? a : b
             this.finish('time', winner)
         }
     }
+
+    private tickSheep(seat: Seat, dt: number) {
+        const s = seat.state
+        s.sheep.forEach((sheep, i) => {
+            if (!sheep.alive) {
+                seat.sheepRespawnMs[i]! -= dt
+                if (seat.sheepRespawnMs[i]! <= 0) {
+                    Object.assign(sheep, freshSheep())
+                    seat.sheepGoals[i] = randomMeadowPoint()
+                }
+                return
+            }
+            const goal = seat.sheepGoals[i]!
+            const threat = distance(sheep, s.pawn) < SHEEP_FLEE_RANGE && s.effects.stunMs === 0
+            let target = goal
+            let speed = SHEEP_SPEED
+            if (threat) {
+                const d = distance(sheep, s.pawn) || 1
+                target = { x: sheep.x + ((sheep.x - s.pawn.x) / d) * 60, y: sheep.y + ((sheep.y - s.pawn.y) / d) * 60 }
+                speed = SHEEP_FLEE_SPEED
+            } else if (distance(sheep, goal) < 6) {
+                // Graze a while, then pick a new spot.
+                sheep.moving = false
+                if (Math.random() < dt / 2500) seat.sheepGoals[i] = randomMeadowPoint()
+                return
+            }
+            const d = distance(sheep, target)
+            if (d < 1) return
+            const step = Math.min(d, (speed * dt) / 1000)
+            const nx = clamp(sheep.x + ((target.x - sheep.x) / d) * step, MEADOW.minX, MEADOW.maxX)
+            const ny = clamp(sheep.y + ((target.y - sheep.y) / d) * step, MEADOW.minY, MEADOW.maxY)
+            sheep.facing = nx < sheep.x ? 'left' : nx > sheep.x ? 'right' : sheep.facing
+            sheep.moving = Math.abs(nx - sheep.x) + Math.abs(ny - sheep.y) > 0.01
+            sheep.x = nx
+            sheep.y = ny
+        })
+    }
+
+    private tickKegs(seat: Seat, dt: number) {
+        const s = seat.state
+        for (const keg of s.kegs) keg.fuseMs -= dt
+        const blown = s.kegs.filter((k) => k.fuseMs <= 0)
+        if (!blown.length) return
+        s.kegs = s.kegs.filter((k) => k.fuseMs > 0)
+        for (const keg of blown) {
+            this.emit(seat, { kind: 'explode', x: keg.x, y: keg.y })
+            if (distance(keg, s.pawn) <= KEG_RADIUS) this.hurtPawn(seat, KEG_STUN_MS)
+            s.resources.forEach((r, i) => {
+                if (r.regrowMs === 0 && distance(keg, RESOURCE_SPOTS[i]!) <= KEG_RADIUS) {
+                    r.hp = 0
+                    r.regrowMs = REGROW_MS[r.kind]
+                }
+            })
+            s.sheep.forEach((sheep, i) => {
+                if (sheep.alive && distance(keg, sheep) <= KEG_RADIUS) {
+                    sheep.alive = false
+                    seat.sheepRespawnMs[i] = REGROW_MS.sheep
+                }
+            })
+        }
+    }
+
+    private tickRaider(seat: Seat, dt: number) {
+        const s = seat.state
+        const r = s.raider
+        if (!r) return
+        seat.raiderAge += dt
+        r.lifeMs -= dt
+        if (s.effects.towerMs > 0 && seat.raiderAge >= TOWER_SHOT_DELAY_MS) {
+            this.emit(seat, { kind: 'shot', x: r.x, y: r.y })
+            s.raider = null
+            return
+        }
+        if (r.lifeMs <= 0) {
+            s.raider = null
+            return
+        }
+        const d = distance(r, s.pawn)
+        if (seat.raiderWindupMs > 0) {
+            seat.raiderWindupMs -= dt
+            if (seat.raiderWindupMs <= 0) {
+                r.attacking = false
+                if (d <= RAIDER_REACH + 18 && s.effects.stunMs === 0) {
+                    this.emit(seat, { kind: 'smack' })
+                    this.hurtPawn(seat, RAIDER_STUN_MS)
+                }
+            }
+            return
+        }
+        if (d <= RAIDER_REACH && s.effects.stunMs === 0) {
+            r.attacking = true
+            r.moving = false
+            seat.raiderWindupMs = RAIDER_WINDUP_MS
+            return
+        }
+        // Wait out the stun next to the victim instead of stun-locking them.
+        if (s.effects.stunMs > 0 && d < RAIDER_REACH * 2) {
+            r.moving = false
+            return
+        }
+        const step = Math.min(d, (RAIDER_SPEED * dt) / 1000)
+        const facing: Facing = s.pawn.x < r.x ? 'left' : 'right'
+        r.x += ((s.pawn.x - r.x) / (d || 1)) * step
+        r.y += ((s.pawn.y - r.y) / (d || 1)) * step
+        r.facing = facing
+        r.moving = true
+    }
+
+    private hurtPawn(seat: Seat, stunMs: number) {
+        const s = seat.state
+        s.effects.stunMs = Math.max(s.effects.stunMs, stunMs)
+        s.pawn.moving = false
+        if (s.carrying) {
+            this.emit(seat, { kind: 'drop', load: s.carrying })
+            s.carrying = null
+        }
+    }
+
+    // ---------- plumbing ----------
 
     private finish(reason: 'time' | 'opponent_left', winner: Seat | null) {
         if (this.finished) return
@@ -279,14 +476,16 @@ export class Match {
                 t: 'end',
                 result: winner === null ? 'draw' : winner === seat ? 'win' : 'lose',
                 reason,
-                yourMoney: seat.state.money,
-                opponentMoney: this.other(seat).state.money,
+                yourGold: seat.state.gold,
+                opponentGold: this.other(seat).state.gold,
             })
         }
         this.onFinish?.()
     }
 
     private broadcast() {
+        const all = this.pending
+        this.pending = []
         for (const seat of this.seats) {
             seat.participant.send({
                 t: 'state',
@@ -294,19 +493,21 @@ export class Match {
                 you: seat.state,
                 opponent: this.other(seat).state,
             })
-            if (seat.events.length) {
-                seat.participant.send({ t: 'events', events: seat.events })
-                seat.events = []
-            }
+        }
+        // Each event is delivered to both players, with `island` relative to the receiver.
+        if (!all.length) return
+        for (const seat of this.seats) {
+            const events = all.map(({ island, event }) => {
+                const side: Side = island === seat ? 'you' : 'opponent'
+                return { ...event, island: side } as GameEvent
+            })
+            seat.participant.send({ t: 'events', events })
         }
     }
 
-    /** Queue an event caused by/happening to `actor`, mirrored for both sides. */
-    private emit(actor: Seat, event: DistributiveOmit<GameEvent, 'by'>) {
-        for (const seat of this.seats) {
-            const by: Side = seat === actor ? 'you' : 'opponent'
-            seat.events.push({ ...event, by } as GameEvent)
-        }
+    /** Queue an event that happened on `island`'s island. */
+    private emit(island: Seat, event: PendingEvent) {
+        this.pending.push({ island, event })
     }
 
     private seat(p: Participant): Seat {
@@ -324,41 +525,23 @@ type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K>
 
 /** Messages come straight off the wire, so never trust their shape. */
 function isValidAction(msg: GameAction): boolean {
-    const validPlot = (n: unknown) => Number.isInteger(n) && (n as number) >= 0 && (n as number) < PLOT_COUNT
     switch (msg.t) {
         case 'move':
             return (
                 Number.isFinite(msg.x) &&
                 Number.isFinite(msg.y) &&
-                FACINGS.has(msg.facing) &&
+                (msg.facing === 'left' || msg.facing === 'right') &&
                 typeof msg.moving === 'boolean'
             )
+        case 'swing':
+            return true
         case 'buy':
             return (
-                typeof msg.id === 'string' &&
-                (isCrop(msg.id) || isItem(msg.id)) &&
-                (msg.plot === undefined || validPlot(msg.plot))
+                isShopId(msg.id) &&
+                (msg.x === undefined || Number.isFinite(msg.x)) &&
+                (msg.y === undefined || Number.isFinite(msg.y))
             )
-        case 'plant':
-            return validPlot(msg.plot) && typeof msg.crop === 'string' && isCrop(msg.crop)
-        case 'harvest':
-            return validPlot(msg.plot)
         default:
             return false
     }
-}
-
-function clamp(v: number, min: number, max: number) {
-    return Math.max(min, Math.min(max, v))
-}
-
-function clearPlot(plot: PlotState) {
-    plot.crop = null
-    plot.progress = 0
-    plot.witherInMs = 0
-}
-
-function ripen(plot: PlotState) {
-    plot.progress = 1
-    plot.witherInMs = RIPE_WINDOW_MS
 }

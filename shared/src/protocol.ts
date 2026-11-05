@@ -1,40 +1,55 @@
-import type { CropId, ItemId } from './config.ts'
+import type { LoadKind, ResourceKind, ShopId, UpgradeId } from './config.ts'
 
-export type Facing = 'down' | 'up' | 'left' | 'right'
+export type Facing = 'left' | 'right'
+export type Side = 'you' | 'opponent'
 
-export interface AvatarState {
+export interface UnitState {
     x: number
     y: number
     facing: Facing
     moving: boolean
 }
 
-export interface PlotState {
-    crop: CropId | null
-    /** 0..1 while growing, 1 when ripe */
-    progress: number
-    /** ms left before a ripe crop withers, 0 while growing */
-    witherInMs: number
+export interface ResourceState {
+    kind: ResourceKind
+    /** swings left before it breaks; 0 while regrowing */
+    hp: number
+    maxHp: number
+    /** ms until it's back, 0 when standing */
+    regrowMs: number
 }
 
-export interface EffectsState {
-    droughtMs: number
-    frozenMs: number
-    scarecrowMs: number
+export interface SheepState extends UnitState {
+    alive: boolean
+    hp: number
+}
+
+export interface RaiderState extends UnitState {
+    attacking: boolean
+    lifeMs: number
+}
+
+export interface KegState {
+    id: number
+    x: number
+    y: number
+    fuseMs: number
 }
 
 export interface PlayerState {
     name: string
-    money: number
-    avatar: AvatarState
-    /** seeds bought in the shop and not planted yet */
-    seeds: Record<CropId, number>
-    plots: PlotState[]
-    effects: EffectsState
-    cooldowns: Record<ItemId, number>
+    gold: number
+    pawn: UnitState
+    carrying: LoadKind | null
+    upgrades: Record<UpgradeId, boolean>
+    cooldowns: Record<ShopId, number>
+    effects: { stunMs: number; fireMs: number; towerMs: number }
+    /** The things on this player's island */
+    resources: ResourceState[]
+    sheep: SheepState[]
+    raider: RaiderState | null
+    kegs: KegState[]
 }
-
-export type Side = 'you' | 'opponent'
 
 // ---- client -> server ----
 
@@ -47,23 +62,32 @@ export type ClientMessage =
     | { t: 'bot'; name: string }
     /** leave the room you are waiting in */
     | { t: 'cancel' }
-    /** your avatar's position, sent continuously while moving */
+    /** your worker's position, streamed while moving */
     | { t: 'move'; x: number; y: number; facing: Facing; moving: boolean }
-    /** buy seeds or an item (must be at the shop). `plot` targets an enemy plot. */
-    | { t: 'buy'; id: CropId | ItemId; plot?: number }
-    | { t: 'plant'; plot: number; crop: CropId }
-    | { t: 'harvest'; plot: number }
+    /** swing your tool at whatever is in reach */
+    | { t: 'swing' }
+    /** buy at the castle; `x`/`y` target a spot on the enemy island (keg) */
+    | { t: 'buy'; id: ShopId; x?: number; y?: number }
 
-export type GameAction = Extract<ClientMessage, { t: 'move' | 'buy' | 'plant' | 'harvest' }>
+export type GameAction = Extract<ClientMessage, { t: 'move' | 'swing' | 'buy' }>
 
 // ---- server -> client ----
 
 export type EndReason = 'time' | 'opponent_left'
 
+/**
+ * One-off moments for effects and sounds. `island` is whose island it happened
+ * on, from the receiver's point of view.
+ */
 export type GameEvent =
-    | { kind: 'item'; by: Side; item: ItemId; plot?: number; blocked: boolean }
-    | { kind: 'harvest'; by: Side; plot: number; amount: number }
-    | { kind: 'wither'; by: Side; plot: number }
+    | { kind: 'swing'; island: Side; target: ResourceKind | 'sheep'; index: number }
+    | { kind: 'gather'; island: Side; load: LoadKind }
+    | { kind: 'deposit'; island: Side; load: LoadKind; amount: number }
+    | { kind: 'buy'; island: Side; item: ShopId }
+    | { kind: 'explode'; island: Side; x: number; y: number }
+    | { kind: 'smack'; island: Side }
+    | { kind: 'drop'; island: Side; load: LoadKind }
+    | { kind: 'shot'; island: Side; x: number; y: number }
 
 export type ServerMessage =
     | { t: 'room'; code: string }
@@ -74,7 +98,7 @@ export type ServerMessage =
           t: 'end'
           result: 'win' | 'lose' | 'draw'
           reason: EndReason
-          yourMoney: number
-          opponentMoney: number
+          yourGold: number
+          opponentGold: number
       }
     | { t: 'error'; message: string }

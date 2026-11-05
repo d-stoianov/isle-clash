@@ -4,5 +4,5 @@ dist
 .DS_Store
 *.log
 
-# Third-party art: license forbids redistribution. See README "Art assets".
+# Tiny Swords art (Pixel Frog): license forbids redistribution. Import with scripts/import-assets.sh
 client/public/assets/

@@ -2,113 +2,106 @@
 
 > "Let's go 1v1 in GoGrow! I'm gonna beat you up."
 
-GoGrow is a fast-paced **1v1 competitive farming game** with a **3-minute timer**, played in the browser. It's built for settling arguments about who's more skilled: send a friend a link and settle it on the farm.
+GoGrow is a fast-paced **1v1 competitive game** with a **3-minute timer**, played in the browser. Two rival villages sit on floating islands. Each player runs a little worker who gathers resources, hauls them home for gold and sabotages the enemy. **Whoever has the most gold when the timer runs out wins.** It's built for settling arguments: send a friend a link and settle it on the islands.
 
 ## The concept
 
-The game is played on a single screen split into two halves. Each player owns one half, which is their farm field. Each field has a **shop** and a limited number of **plots** where seeds can be planted. Each player controls a little farmer who walks around their field.
+The screen is split in two. **Your island is on the left and your rival's is on the right**, and both are always visible. You can see what your rival is doing, where their worker is running and which resources they're about to cash in.
 
-Each player starts with some money and spends it in the shop on seeds. Planted crops grow in real time, and you sell ripe crops for profit. The shop also sells a **booster** that instantly grows your crops. **Whoever has more money when the timer runs out wins.**
+Each island has a **castle**, which is both your bank and your shop, plus **trees**, **gold rocks** and wandering **sheep**:
 
-To make the game more skill-based and competitive, the shop also sells **debuffs** that mess with the other player:
+| Source    | Tool    | Swings | Load | Worth | Comes back after |
+| --------- | ------- | ------ | ---- | ----- | ---------------- |
+| Tree      | Axe     | 3      | Wood | 10    | 12s              |
+| Gold rock | Pickaxe | 6      | Gold | 40    | 20s              |
+| Sheep     | Knife   | 2      | Meat | 22    | 10s              |
 
-- call a **tornado** to destroy all of the opponent's crops
-- **strike** one of their crops with lightning
-- **slow down** their crop growth
-- **freeze** them so they can't move or act
+1. **Gather:** walk up to a source and hit **Space** to swing. Every press is one swing, with a short cooldown, so fast and accurate hands win. Sheep run away from you, so you have to corner them.
+2. **Haul:** your worker carries **one load at a time**. Run it back to your castle gate to bank the gold.
+3. **Spend:** at the castle, invest in upgrades or buy sabotage. Every coin you spend lowers your score, so each purchase is a bet that it'll earn or cost more than it's worth.
 
-Crops come in tiers from **fast-growing (5 seconds)** to **really slow-growing (25 seconds)**. A crop that grows longer sells for more, but it also stays on the field longer, so your opponent has more time to destroy that expensive crop. **Both players can always see each other's field**, including where the other farmer is walking. Use that to decide which plots to hit and when to throw a debuff.
+### The shop
+
+| Item          | Type    | Cost | Effect                                                                                     |
+| ------------- | ------- | ---- | ------------------------------------------------------------------------------------------ |
+| Sharp Axe     | upgrade | 50   | Trees fall in 2 swings instead of 3                                                        |
+| Steel Pickaxe | upgrade | 80   | Gold breaks in 3 swings instead of 6                                                       |
+| Swift Boots   | upgrade | 70   | Run 25% faster                                                                             |
+| Powder Keg    | attack  | 60   | Pick a spot on their island. After a 1.6s fuse it explodes: stuns, makes them drop their load, wrecks trees, gold and sheep |
+| Raider        | attack  | 90   | A warrior lands on their island and hunts their worker for 12s. Each hit stuns and drops their load |
+| Torch         | attack  | 70   | Sets their castle on fire for 7s: no deliveries, no shopping                               |
+| Archer Tower  | defense | 60   | Guards your island for 45s and shoots down any raider                                      |
+
+All numbers live in [`shared/src/config.ts`](shared/src/config.ts).
 
 ### Why it's a skill game
 
 Nothing about the outcome is random. You win by:
 
-- **Speed:** how fast you move your farmer, how quickly you press your buttons, how few steps you waste between the shop and your plots.
-- **Reading your opponent:** you see their field, their seeds and their farmer. Hit their potato just before it ripens, or put up a Scarecrow when they're walking to the shop with money.
-- **Managing risk:** play it safe with cheap, fast crops, or invest in slow, expensive ones and defend them. Freezing an opponent while their crops are ripe can make them wither.
+- **Hands:** how quickly you move, how fast you mash Space and how cleanly you corner a sheep.
+- **Routing:** which source to hit next, and whether it's worth a long walk for gold or a short one for wood.
+- **Reading your rival:** if they're hauling gold, a keg on their path makes them drop it. If they're about to deliver, torch the castle. If you see them shopping with 90 gold, a raider may be coming, so get a tower up first.
+- **Dodging:** keg blasts are telegraphed with a red circle and a countdown, and raiders can be outrun. Keep your eyes on your own island.
 
 ## How to play
 
 1. Type your **nickname** on the start screen.
-2. Click **Create room** and send the invite link to the friend you want to fight. Or click **Practice vs bot**.
-3. Your friend opens the link, picks a nickname and clicks **Join**. The match starts right away.
-4. Walk to the **shop door** and press **E** to buy seeds and items.
-5. Walk onto a **plot** and press **Space** to plant. When the crop is ripe (it glows yellow), stand on it and press **Space** again to sell it.
-6. When the timer hits 0:00, the richest farmer wins.
+2. Click **Create room**. The invite link is copied for you, so send it to the friend you want to fight. Or click **Practice vs bot**.
+3. Your friend opens the link, picks a nickname and clicks **Join**. The match starts immediately.
 
-### Controls
-
-| Action                    | Key                                        |
-| ------------------------- | ------------------------------------------ |
-| Move                      | `WASD` / arrow keys                        |
-| Plant / harvest           | `Space` (or click the plot you stand on)   |
-| Open / close shop         | `E` at the shop door, `Esc` to close       |
-| Pick which seed to plant  | `1` – `4` (or click the seed bar)          |
-| Buy in the shop           | Click, or `1`–`4` seeds and `5`–`0` items  |
-| Aim Lightning             | Click an enemy crop (`Esc` cancels)        |
-
-### Crops
-
-| Crop       | Seed cost | Sells for | Grow time |
-| ---------- | --------- | --------- | --------- |
-| Leek       | $10       | $22       | 5s        |
-| Strawberry | $25       | $60       | 11s       |
-| Onion      | $45       | $115      | 17s       |
-| Potato     | $80       | $220      | 25s       |
-
-A ripe crop withers if you don't sell it within 12 seconds.
-
-### Shop items
-
-| Item       | Type    | Cost | Effect                                       |
-| ---------- | ------- | ---- | -------------------------------------------- |
-| Fertilizer | booster | $70  | Instantly ripens all your crops              |
-| Scarecrow  | buff    | $35  | Blocks the next debuff used on you (30s)     |
-| Lightning  | debuff  | $35  | Destroys one enemy crop that you pick        |
-| Drought    | debuff  | $45  | Enemy crops grow 60% slower for 15s          |
-| Freeze     | debuff  | $50  | Enemy can't move or act for 3s               |
-| Tornado    | debuff  | $200 | Destroys **all** enemy crops                 |
-
-Every item has a cooldown. All balance numbers and the farm layout are in [`shared/src/config.ts`](shared/src/config.ts).
+| Action                 | Key                                             |
+| ---------------------- | ----------------------------------------------- |
+| Move                   | `WASD` / arrow keys                             |
+| Chop / mine / catch    | `Space` (one swing per press)                   |
+| Deliver                | Walk into your castle gate (automatic)          |
+| Shop                   | `E` at the castle gate, `1`–`7` or click to buy |
+| Aim a powder keg       | Click a spot on the enemy island (`Esc` cancels) |
 
 ## Tech
 
-- **Client:** [Phaser 4](https://phaser.io) + TypeScript, bundled with Vite. The game uses 16×16 pixel art drawn at 3× and a fixed 1280×720 resolution that scales to fit any window.
+- **Client:** [Phaser 4](https://phaser.io) + TypeScript, bundled with Vite. The game renders at a fixed 1600×900 resolution that scales to fit any window. Text uses the Lilita One font.
 - **Server:** Node.js 24 + [`ws`](https://github.com/websockets/ws), written in TypeScript. Node runs the TypeScript directly, so the server has no build step.
-- **Shared:** game config, farm layout and the message protocol, used by both client and server.
+- **Shared:** game config, island layout, walking/collision and targeting rules, and the message protocol. Client and server both import it.
 
 ### Netcode
 
-It's a fast game, so it has to feel instant and look smooth:
-
-- **Your own farmer moves on your screen immediately.** The client streams your position to the server 20 times a second. The server checks the speed and bounds and snaps you back only if you cheat or drift too far.
-- **Your opponent's farmer is interpolated.** It's drawn about 100ms in the past and blended between server snapshots, so it glides smoothly instead of jumping between updates.
-- **The server decides everything else.** It owns money, seeds, crop growth, range checks (you must stand at the shop to buy and on a plot to plant or harvest), items and the timer. It sends a snapshot of the game to both players 20 times a second.
+- **Your own worker moves on your screen immediately.** The client streams your position to the server 20 times a second. The server checks speed and bounds and snaps you back only if something is off.
+- **Everything else is interpolated:** the rival's worker, sheep and raiders are drawn about 100ms in the past and blended between server snapshots, so they glide instead of jumping.
+- **The server decides the rest.** It owns gold, swings, ranges, loads, sheep AI, raiders, kegs, fire, towers and the timer. It sends a full snapshot to both players 20 times a second, plus one-off events for effects.
 
 ```
 gogrow/
-├── client/
-│   ├── public/assets/   pixel-art sprites (third-party, not committed; see below)
-│   └── src/
-│       ├── scenes/      BootScene (assets, animations), MenuScene, GameScene
-│       ├── Farm.ts      draws one player's field (shop, plots, crops, decor)
-│       ├── Avatar.ts    farmer sprite with idle/walk animations + nickname
-│       ├── ShopMenu.ts  shop popup
-│       └── net.ts       WebSocket client
-├── server/src/          rooms (main.ts), match simulation (match.ts), practice bot
-└── shared/src/          config (crops, items, layout, timings) + protocol types
+├── client/src/
+│   ├── scenes/       BootScene (assets, animations, 9-slice UI), MenuScene, GameScene
+│   ├── Island.ts     one floating island: terrain, castle, trees, gold, sheep, kegs, fire, tower, raider
+│   ├── Unit.ts       worker/warrior sprite: animations, shadow, name tag, prompt
+│   ├── ShopMenu.ts   castle shop popup
+│   ├── ui.ts         text, panels, ribbons, buttons, effects helpers
+│   └── net.ts        WebSocket client
+├── server/src/       rooms (main.ts), match simulation (match.ts), practice bot (bot.ts)
+├── shared/src/       config.ts, rules.ts, protocol.ts
+└── scripts/          import-assets.sh
 ```
 
 ## Running locally
 
-Requires Node.js 24+.
+Requires Node.js 24+ and the free [Tiny Swords](https://pixelfrog-assets.itch.io/tiny-swords) asset pack by Pixel Frog (see below).
 
 ```bash
 npm install
+./scripts/import-assets.sh "/path/to/Tiny Swords (Free Pack)"
 npm run dev          # server on :8080, client on http://localhost:5173
 ```
 
-Open two browser tabs: create a room in one, then open the invite link in the other. Or use **Practice vs bot**. In dev mode, `http://localhost:5173/?practice` skips the menu and starts a bot match.
+Open two browser windows: create a room in one, then open the invite link in the other. Or use **Practice vs bot**. In dev mode, `http://localhost:5173/?practice` skips the menu and starts a bot match.
+
+Playtest knobs for the server:
+
+```bash
+START_GOLD=500 MATCH_MS=30000 npm run dev:server   # rich start, 30s matches
+```
+
+Other scripts:
 
 ```bash
 npm run typecheck    # all workspaces
@@ -120,20 +113,7 @@ The client connects to `ws://<current host>:8080` by default. To use a different
 
 ### Art assets
 
-The character, crops, house, fences, trees, rocks and chicken come from **"Farm RPG FREE 16x16 – Tiny Asset Pack"** by [Emanuelle](https://emanuelledev.itch.io/farm-rpg). The pack's terms don't allow redistributing the files, so they're git-ignored. Download the pack yourself and copy these files into `client/public/assets/`:
-
-| File in the pack                  | Save as          |
-| --------------------------------- | ---------------- |
-| `Character/Idle.png`              | `char-idle.png`  |
-| `Character/Walk.png`              | `char-walk.png`  |
-| `Objects/Spring Crops.png`        | `crops.png`      |
-| `Objects/House.png`               | `house.png`      |
-| `Objects/Fence's copiar.png`      | `fences.png`     |
-| `Objects/Maple Tree.png`          | `tree.png`       |
-| `Objects/Road copiar.png`         | `rocks.png`      |
-| `Farm Animals/Chicken Red.png`    | `chicken.png`    |
-
-The item icons (lightning, freeze...) and soil tiles are generated in code (`client/src/sprites.ts`).
+All art comes from **[Tiny Swords (Free Pack)](https://pixelfrog-assets.itch.io/tiny-swords) by Pixel Frog**. The pack's license doesn't allow redistributing the files, so `client/public/assets/` is git-ignored. `scripts/import-assets.sh` copies and renames exactly the files the game needs.
 
 ### Deploying the server
 
@@ -149,5 +129,5 @@ docker run -p 8080:8080 gogrow-server
 - Accounts and logins, player profiles, match history, ranking
 - Matchmaking queue alongside private rooms
 - Rematch button, spectators
-- More crops, items and maps (pests, rain, market price swings...)
-- Sound, more animations and effects
+- More sabotage and defenses (monk heals, lancer charge, bridges), more maps
+- Sound and music
