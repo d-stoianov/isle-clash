@@ -2,7 +2,7 @@
 
 > "Let's go 1v1 in GoGrow! I'm gonna beat you up."
 
-GoGrow is a fast-paced **1v1 competitive game** with a **3-minute timer**, played in the browser. Two rival villages sit on floating islands. Each player runs a little worker who gathers resources, hauls them home for gold and sabotages the enemy. **Whoever has the most gold when the timer runs out wins.** It's built for settling arguments: send a friend a link and settle it on the islands.
+GoGrow is a fast-paced **1v1 competitive game** with a **3-minute timer**, played in the browser. Two rival villages sit on floating islands, facing each other across a strait. Each player runs a little worker who gathers resources and hauls them home for gold, then spends it on upgrades, sabotage and an **army**. Build a **bridge**, march your soldiers across and plunder the enemy castle. **Whoever has the most gold when the timer runs out wins.** It's built for settling arguments: send a friend a link and settle it on the islands.
 
 ## The concept
 
@@ -18,7 +18,26 @@ Each island has a **castle**, which is both your bank and your shop, plus **tree
 
 1. **Gather:** walk up to a source and hit **Space** to swing. Every press is one swing, with a short cooldown, so fast and accurate hands win. Sheep run away from you, so you have to corner them.
 2. **Haul:** your worker carries **one load at a time**. Run it back to your castle gate to bank the gold.
-3. **Spend:** at the castle, invest in upgrades or buy sabotage. Every coin you spend lowers your score, so each purchase is a bet that it'll earn or cost more than it's worth.
+3. **Spend:** at the castle, invest in upgrades, sabotage or soldiers. Every coin you spend lowers your score, so each purchase is a bet that it'll earn or cost more than it's worth.
+4. **Fight:** build the bridge, press **Q** to charge, and your army crosses to fight theirs. It knocks over their worker and attacks their castle. **Every hit on the castle steals gold** from them and gives it to you.
+
+### Army & bridge
+
+| Soldier | Cost | Role                            | Strong against |
+| ------- | ---- | ------------------------------- | -------------- |
+| Warrior | 60   | Tough melee (sword & shield)    | Lancers        |
+| Archer  | 70   | Ranged, fragile                 | Warriors       |
+| Lancer  | 90   | Fast, hard-hitting charger      | Archers, monks |
+| Monk    | 80   | Heals nearby allies, never fights | —            |
+
+- Train soldiers at your castle gate with `Z X C V`, without opening the shop. Up to 8 at a time.
+- `Q` switches your army between **Charge** and **Defend**:
+  - Charging soldiers cross the bridge and attack the enemy castle. If there's no bridge yet, they wait at the edge of your island.
+  - Defending soldiers guard your castle.
+- **The bridge is shared.** Either player can build it for 150 gold, and once it's up both armies can use it. Building it is a declaration of war.
+- **A powder keg on the bridge blows it up**, and any soldiers on it fall into the water. Use it to cut off an invasion, or to trap their army on your side.
+- The archer tower shoots any enemy soldier or raider in range.
+- A worker knocked over by a soldier gets a short grace period before it can be knocked over again, so it can't be stunned forever.
 
 ### The shop
 
@@ -30,7 +49,8 @@ Each island has a **castle**, which is both your bank and your shop, plus **tree
 | Powder Keg    | attack  | 60   | Pick a spot on their island. After a 1.6s fuse it explodes: stuns, makes them drop their load, wrecks trees, gold and sheep |
 | Raider        | attack  | 90   | A warrior lands on their island and hunts their worker for 12s. Each hit stuns and drops their load |
 | Torch         | attack  | 70   | Sets their castle on fire for 7s: no deliveries, no shopping                               |
-| Archer Tower  | defense | 60   | Guards your island for 45s and shoots down any raider                                      |
+| Archer Tower  | build   | 60   | Guards your island for 45s and shoots raiders and invading soldiers                        |
+| Bridge        | build   | 150  | Connects the islands so armies can cross, in both directions                               |
 
 All numbers live in [`shared/src/config.ts`](shared/src/config.ts).
 
@@ -41,6 +61,7 @@ Nothing about the outcome is random. You win by:
 - **Hands:** how quickly you move, how fast you mash Space and how cleanly you corner a sheep.
 - **Routing:** which source to hit next, and whether it's worth a long walk for gold or a short one for wood.
 - **Reading your rival:** if they're hauling gold, a keg on their path makes them drop it. If they're about to deliver, torch the castle. If you see them shopping with 90 gold, a raider may be coming, so get a tower up first.
+- **Army timing and counters:** charge when they're out of position, answer warriors with archers and archers with lancers, and keep a monk behind the line. Blow the bridge when a charge goes wrong.
 - **Dodging:** keg blasts are telegraphed with a red circle and a countdown, and raiders can be outrun. Keep your eyes on your own island.
 
 ## How to play
@@ -54,8 +75,10 @@ Nothing about the outcome is random. You win by:
 | Move                   | `WASD` / arrow keys                             |
 | Chop / mine / catch    | `Space` (one swing per press)                   |
 | Deliver                | Walk into your castle gate (automatic)          |
-| Shop                   | `E` at the castle gate, `1`–`7` or click to buy |
-| Aim a powder keg       | Click a spot on the enemy island (`Esc` cancels) |
+| Shop                   | `E` at the castle gate, then click or press the key shown on the card |
+| Train soldiers         | `Z` warrior, `X` archer, `C` lancer, `V` monk (at the gate) |
+| Army order             | `Q` toggles Charge / Defend                     |
+| Aim a powder keg       | Click a spot on their island or the bridge (`Esc` cancels) |
 
 ## Tech
 
@@ -67,7 +90,8 @@ Nothing about the outcome is random. You win by:
 
 - **Your own worker moves on your screen immediately.** The client streams your position to the server 20 times a second. The server checks speed and bounds and snaps you back only if something is off.
 - **Everything else is interpolated:** the rival's worker, sheep and raiders are drawn about 100ms in the past and blended between server snapshots, so they glide instead of jumping.
-- **The server decides the rest.** It owns gold, swings, ranges, loads, sheep AI, raiders, kegs, fire, towers and the timer. It sends a full snapshot to both players 20 times a second, plus one-off events for effects.
+- **The server decides the rest.** It owns gold, swings, ranges, loads, sheep AI, raiders, kegs, fire, towers, the bridge, all soldiers and the timer. It sends a full snapshot to both players 20 times a second, plus one-off events for effects.
+- Soldiers live in shared **arena coordinates** (island, strait, island). The second player's client mirrors them, so everyone sees their own island on the left.
 
 ```
 gogrow/
@@ -78,7 +102,7 @@ gogrow/
 │   ├── ShopMenu.ts   castle shop popup
 │   ├── ui.ts         text, panels, ribbons, buttons, effects helpers
 │   └── net.ts        WebSocket client
-├── server/src/       rooms (main.ts), match simulation (match.ts), practice bot (bot.ts)
+├── server/src/       rooms (main.ts), match simulation (match.ts), soldiers/bridge/towers (army.ts), bot (bot.ts)
 ├── shared/src/       config.ts, rules.ts, protocol.ts
 └── scripts/          import-assets.sh
 ```
@@ -129,5 +153,5 @@ docker run -p 8080:8080 gogrow-server
 - Accounts and logins, player profiles, match history, ranking
 - Matchmaking queue alongside private rooms
 - Rematch button, spectators
-- More sabotage and defenses (monk heals, lancer charge, bridges), more maps
+- Unit abilities and hero units, siege weapons, more maps
 - Sound and music

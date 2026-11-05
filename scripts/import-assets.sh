@@ -22,7 +22,9 @@ for color in Blue Red; do
         cp "$U/Pawn/$f.png" "$DEST/units/$team-$(slug "$f").png"
     done
     for f in Warrior_Idle Warrior_Run Warrior_Attack1; do cp "$U/Warrior/$f.png" "$DEST/units/$team-$(slug "$f").png"; done
-    cp "$U/Archer/Archer_Shoot.png" "$DEST/units/$team-archer-shoot.png"
+    for f in Archer_Idle Archer_Run Archer_Shoot; do cp "$U/Archer/$f.png" "$DEST/units/$team-$(slug "$f").png"; done
+    for f in Lancer_Idle Lancer_Run Lancer_Right_Attack; do cp "$U/Lancer/$f.png" "$DEST/units/$team-$(slug "$f").png"; done
+    for f in Idle Run Heal Heal_Effect; do cp "$U/Monk/$f.png" "$DEST/units/$team-monk-$(slug "$f").png"; done
     cp "$U/Archer/Arrow.png" "$DEST/units/$team-arrow.png"
     for b in Castle Tower; do cp "$SRC/Buildings/$color Buildings/$b.png" "$DEST/buildings/$team-$(slug "$b").png"; done
 done

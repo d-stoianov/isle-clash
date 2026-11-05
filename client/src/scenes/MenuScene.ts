@@ -73,9 +73,9 @@ export class MenuScene extends Phaser.Scene {
             cancel.setVisible(true)
             this.copyLink(copy)
         }
-        const onStart = (msg: { opponentName: string }) => {
+        const onStart = (msg: { opponentName: string; seat: 0 | 1 }) => {
             history.replaceState(null, '', location.pathname)
-            this.scene.start('game', { opponentName: msg.opponentName, myName: this.name() })
+            this.scene.start('game', { opponentName: msg.opponentName, myName: this.name(), seat: msg.seat })
         }
         const onError = (msg: { message: string }) => this.status.setText(msg.message)
         const onClose = () => this.status.setText('Could not reach the server')

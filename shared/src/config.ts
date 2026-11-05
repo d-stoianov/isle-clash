@@ -82,15 +82,16 @@ export const REGROW_MS = { tree: 12_000, gold: 20_000, sheep: 10_000 }
 
 export type UpgradeId = 'axe' | 'pickaxe' | 'boots'
 export type AttackId = 'keg' | 'raider' | 'fire'
-export type DefenseId = 'tower'
-export type ShopId = UpgradeId | AttackId | DefenseId
+export type SoldierType = 'warrior' | 'archer' | 'lancer' | 'monk'
+export type BuildId = 'tower' | 'bridge'
+export type ShopId = UpgradeId | AttackId | SoldierType | BuildId
 
 export interface ShopItem {
     id: ShopId
     name: string
     cost: number
     cooldownMs: number
-    kind: 'upgrade' | 'attack' | 'defense'
+    kind: 'upgrade' | 'attack' | 'army' | 'build'
     /** attack needs a spot on the enemy island to be picked */
     targeted: boolean
     description: string
@@ -164,19 +165,149 @@ export const SHOP: Record<ShopId, ShopItem> = {
         targeted: false,
         description: 'Sets their castle ablaze for 7s: no deliveries, no shopping',
     },
+    warrior: {
+        id: 'warrior',
+        name: 'Warrior',
+        cost: 60,
+        cooldownMs: 1_500,
+        kind: 'army',
+        targeted: false,
+        description: 'Tough sword & shield. Beats lancers',
+    },
+    archer: {
+        id: 'archer',
+        name: 'Archer',
+        cost: 70,
+        cooldownMs: 1_500,
+        kind: 'army',
+        targeted: false,
+        description: 'Shoots from range. Beats warriors',
+    },
+    lancer: {
+        id: 'lancer',
+        name: 'Lancer',
+        cost: 90,
+        cooldownMs: 1_500,
+        kind: 'army',
+        targeted: false,
+        description: 'Fast, hard-hitting charger. Beats archers',
+    },
+    monk: {
+        id: 'monk',
+        name: 'Monk',
+        cost: 80,
+        cooldownMs: 1_500,
+        kind: 'army',
+        targeted: false,
+        description: 'Heals nearby allies. Never fights',
+    },
     tower: {
         id: 'tower',
         name: 'Archer Tower',
         cost: 60,
         cooldownMs: 30_000,
-        kind: 'defense',
+        kind: 'build',
         targeted: false,
-        description: 'Guards your island for 45s: shoots down any raider',
+        description: 'Guards your island for 45s: shoots raiders and invaders',
+    },
+    bridge: {
+        id: 'bridge',
+        name: 'Bridge',
+        cost: 150,
+        cooldownMs: 0,
+        kind: 'build',
+        targeted: false,
+        description: 'Bridges the strait so armies can cross. Both ways!',
     },
 }
 
 export const SHOP_IDS = Object.keys(SHOP) as ShopId[]
 export const UPGRADE_IDS: UpgradeId[] = ['axe', 'pickaxe', 'boots']
+export const SOLDIER_TYPES: SoldierType[] = ['warrior', 'archer', 'lancer', 'monk']
+
+// ---------- army & bridge ----------
+// Soldiers live in "arena" coordinates: seat 0's island at x 0..ISLAND_W, the strait,
+// then seat 1's island mirrored so both islands face each other across the bridge.
+
+export const STRAIT = 144
+export const ARENA_W = ISLAND_W * 2 + STRAIT
+export const BRIDGE_Y = 345
+export const BRIDGE_HALF = 34
+export const BRIDGE_BUILD_MS = 4_000
+export const MAX_SOLDIERS = 8
+export const ARMY_AGGRO = 260
+/** Gold stolen per point of damage dealt to an enemy castle. */
+export const PLUNDER_RATE = 0.5
+export const TOWER_RANGE = 330
+export const TOWER_DAMAGE = 30
+export const TOWER_FIRE_MS = 1_000
+export const KEG_UNIT_DAMAGE = 45
+
+export interface SoldierStats {
+    hp: number
+    damage: number
+    range: number
+    speed: number
+    cooldownMs: number
+}
+
+export const SOLDIERS: Record<SoldierType, SoldierStats> = {
+    warrior: { hp: 120, damage: 18, range: 48, speed: 125, cooldownMs: 900 },
+    archer: { hp: 60, damage: 13, range: 250, speed: 115, cooldownMs: 1_100 },
+    lancer: { hp: 110, damage: 28, range: 64, speed: 175, cooldownMs: 1_300 },
+    /** monk: `damage` is healing per cast */
+    monk: { hp: 70, damage: 16, range: 190, speed: 120, cooldownMs: 1_300 },
+}
+
+/** Rock-paper-scissors: attacker -> defender -> damage multiplier. */
+export const COUNTERS: Partial<Record<SoldierType, Partial<Record<SoldierType, number>>>> = {
+    archer: { warrior: 1.6 },
+    lancer: { archer: 1.8, monk: 1.4 },
+    warrior: { lancer: 1.6 },
+}
+
+export function toArena(seat: 0 | 1, p: Point): Point {
+    return seat === 0 ? { x: p.x, y: p.y } : { x: ARENA_W - p.x, y: p.y }
+}
+
+/** Arena -> island-local for `seat` (the same flip, it's its own inverse). */
+export const fromArena = toArena
+
+/** Which island an arena x is on, or 'strait'. */
+export function regionOf(x: number): 0 | 1 | 'strait' {
+    if (x <= ISLAND_W) return 0
+    if (x >= ISLAND_W + STRAIT) return 1
+    return 'strait'
+}
+
+export function onBridgeBand(y: number) {
+    return Math.abs(y - BRIDGE_Y) <= BRIDGE_HALF
+}
+
+/**
+ * Arena-space movement for soldiers: islands use the normal colliders, the strait
+ * is only walkable on the bridge band, and only while the bridge stands.
+ */
+export function walkArena(from: Point, to: Point, bridgeUp: boolean): Point {
+    const fr = regionOf(from.x)
+    let x = to.x
+    let y = to.y
+    const canCross = bridgeUp && onBridgeBand(from.y) && onBridgeBand(y)
+    if (fr === 'strait') {
+        if (!bridgeUp) return from
+        y = clamp(y, BRIDGE_Y - BRIDGE_HALF, BRIDGE_Y + BRIDGE_HALF)
+        return { x: clamp(x, 0, ARENA_W), y }
+    }
+    // On an island: leaving through the inner edge is only possible on the bridge.
+    const seat = fr
+    const local = fromArena(seat, from)
+    const target = fromArena(seat, { x, y })
+    const onEdge = local.x > BOUNDS.maxX - 1
+    if (canCross && (target.x > BOUNDS.maxX || onEdge)) {
+        return toArena(seat, { x: target.x, y: clamp(target.y, BRIDGE_Y - BRIDGE_HALF, BRIDGE_Y + BRIDGE_HALF) })
+    }
+    return toArena(seat, walk(local, target))
+}
 
 export function isShopId(id: unknown): id is ShopId {
     return typeof id === 'string' && Object.hasOwn(SHOP, id)

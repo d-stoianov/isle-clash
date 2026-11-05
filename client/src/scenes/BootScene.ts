@@ -101,8 +101,11 @@ export class BootScene extends Phaser.Scene {
             for (const [name] of Object.entries(PAWN_SHEETS)) {
                 this.load.spritesheet(`${team}-pawn-${name}`, `units/${team}-pawn-${name}.png`, { frameWidth: 192, frameHeight: 192 })
             }
-            for (const name of ['warrior-idle', 'warrior-run', 'warrior-attack1', 'archer-shoot']) {
+            for (const name of ['warrior-idle', 'warrior-run', 'warrior-attack1', 'archer-idle', 'archer-run', 'archer-shoot', 'monk-idle', 'monk-run', 'monk-heal', 'monk-heal-effect']) {
                 this.load.spritesheet(`${team}-${name}`, `units/${team}-${name}.png`, { frameWidth: 192, frameHeight: 192 })
+            }
+            for (const name of ['lancer-idle', 'lancer-run', 'lancer-right-attack']) {
+                this.load.spritesheet(`${team}-${name}`, `units/${team}-${name}.png`, { frameWidth: 320, frameHeight: 320 })
             }
             this.load.image(`${team}-arrow`, `units/${team}-arrow.png`)
             this.load.image(`${team}-castle`, `buildings/${team}-castle.png`)
@@ -125,7 +128,17 @@ export class BootScene extends Phaser.Scene {
             this.anim(`${team}-warrior-idle`, `${team}-warrior-idle`, 8, 9, -1)
             this.anim(`${team}-warrior-run`, `${team}-warrior-run`, 6, 12, -1)
             this.anim(`${team}-warrior-attack`, `${team}-warrior-attack1`, 4, 12, 0)
-            this.anim(`${team}-archer-shoot`, `${team}-archer-shoot`, 8, 16, 0)
+            this.anim(`${team}-archer-shoot`, `${team}-archer-shoot`, 8, 20, 0)
+            this.anim(`${team}-archer-attack`, `${team}-archer-shoot`, 8, 20, 0)
+            this.anim(`${team}-archer-idle`, `${team}-archer-idle`, 6, 9, -1)
+            this.anim(`${team}-archer-run`, `${team}-archer-run`, 4, 10, -1)
+            this.anim(`${team}-lancer-idle`, `${team}-lancer-idle`, 12, 10, -1)
+            this.anim(`${team}-lancer-run`, `${team}-lancer-run`, 6, 12, -1)
+            this.anim(`${team}-lancer-attack`, `${team}-lancer-right-attack`, 3, 10, 0)
+            this.anim(`${team}-monk-idle`, `${team}-monk-idle`, 6, 9, -1)
+            this.anim(`${team}-monk-run`, `${team}-monk-run`, 4, 10, -1)
+            this.anim(`${team}-monk-attack`, `${team}-monk-heal`, 11, 26, 0)
+            this.anim(`${team}-monk-heal-effect`, `${team}-monk-heal-effect`, 11, 22, 0)
         }
         for (const [key, [, , , frames, fps, repeat]] of Object.entries(SHEETS)) this.anim(key, key, frames, fps, repeat)
 
@@ -144,8 +157,49 @@ export class BootScene extends Phaser.Scene {
             this.compactNineSlice(`ribbon-${color}`, `raw-ribbon-${color}`)
         })
 
+        this.makeBridgeTexture()
         this.input.setDefaultCursor('url(assets/ui/cursor.png) 8 4, auto')
         this.scene.start('menu')
+    }
+
+    /** The pack has no bridge, so draw a plank bridge in its palette. */
+    private makeBridgeTexture() {
+        const w = 200
+        const h = 84
+        const c = document.createElement('canvas')
+        c.width = w
+        c.height = h
+        const g = c.getContext('2d')!
+        const ink = '#2b1d14'
+        // planks
+        for (let x = 4, i = 0; x < w - 4; x += 12, i++) {
+            g.fillStyle = ink
+            g.fillRect(x, 12, 12, h - 24)
+            g.fillStyle = i % 2 ? '#b97a3e' : '#a86b34'
+            g.fillRect(x + 1, 14, 10, h - 28)
+            g.fillStyle = 'rgba(255,255,255,0.18)'
+            g.fillRect(x + 1, 14, 10, 3)
+            g.fillStyle = 'rgba(0,0,0,0.18)'
+            g.fillRect(x + 1, h - 20, 10, 6)
+        }
+        // rails and posts
+        for (const y of [6, h - 14]) {
+            g.fillStyle = ink
+            g.fillRect(0, y - 1, w, 8)
+            g.fillStyle = '#7a4a24'
+            g.fillRect(0, y, w, 5)
+            g.fillStyle = 'rgba(255,255,255,0.2)'
+            g.fillRect(0, y, w, 1)
+        }
+        for (const x of [0, w / 2 - 6, w - 12]) {
+            for (const y of [0, h - 20]) {
+                g.fillStyle = ink
+                g.fillRect(x, y, 12, 20)
+                g.fillStyle = '#8c5a2e'
+                g.fillRect(x + 2, y + 2, 8, 16)
+            }
+        }
+        this.textures.addCanvas('bridge', c)
     }
 
     private anim(key: string, sheet: string, frames: number, frameRate: number, repeat: number) {

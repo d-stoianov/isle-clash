@@ -1,5 +1,7 @@
 import Phaser from 'phaser'
 import {
+    BRIDGE_HALF,
+    BRIDGE_Y,
     CASTLE,
     ISLAND_COLS,
     ISLAND_H,
@@ -8,7 +10,9 @@ import {
     KEG_RADIUS,
     RESOURCE_SPOTS,
     TILE,
+    STRAIT,
     TOWER_SPOT,
+    type Facing,
     type PlayerState,
     type RaiderState,
     type SheepState,
@@ -38,6 +42,8 @@ interface KegView {
 export class Island {
     readonly ox: number
     readonly oy: number
+    /** The rival's island is drawn mirrored so both inner edges face the strait. */
+    readonly mirror: boolean
     private scene: Phaser.Scene
     private resources: ResourceView[] = []
     private sheep: Phaser.GameObjects.Sprite[] = []
@@ -53,10 +59,11 @@ export class Island {
     private raiderVisible = false
     private castle: Phaser.GameObjects.Image
 
-    constructor(scene: Phaser.Scene, ox: number, oy: number, team: Team, enemy: Team) {
+    constructor(scene: Phaser.Scene, ox: number, oy: number, team: Team, enemy: Team, mirror = false) {
         this.scene = scene
         this.ox = ox
         this.oy = oy
+        this.mirror = mirror
         this.buildTerrain()
 
         // decorations first so they sort under everything nearby
@@ -109,18 +116,24 @@ export class Island {
     }
 
     sx(x: number) {
-        return this.ox + x
+        return this.mirror ? this.ox + ISLAND_W - x : this.ox + x
+    }
+
+    /** Facing as seen on screen (flipped on the mirrored island). */
+    face(f: Facing): Facing {
+        return this.mirror ? (f === 'left' ? 'right' : 'left') : f
     }
 
     sy(y: number) {
         return this.oy + y
     }
 
-    /** Screen point -> island world point, or null when outside the island. */
+    /** Screen point -> island world point (or the bridge just off its inner edge), else null. */
     toWorld(x: number, y: number) {
-        const wx = x - this.ox
+        const wx = this.mirror ? ISLAND_W - (x - this.ox) : x - this.ox
         const wy = y - this.oy
-        if (wx < 0 || wy < 0 || wx > ISLAND_W || wy > ISLAND_H) return null
+        const onBridge = Math.abs(wy - BRIDGE_Y) <= BRIDGE_HALF && wx > ISLAND_W && wx <= ISLAND_W + STRAIT / 2
+        if (!onBridge && (wx < 0 || wy < 0 || wx > ISLAND_W || wy > ISLAND_H)) return null
         return { x: wx, y: wy }
     }
 
@@ -165,7 +178,7 @@ export class Island {
             s.add.image(this.ox + c * TILE, this.oy + rows * TILE, 'tilemap', `t${tc}_5`).setOrigin(0).setDepth(-80)
         }
         // a few rocks bobbing in the water
-        const wr: [string, number, number][] = [['water-rock1', -30, 120], ['water-rock2', ISLAND_W + 28, 330], ['water-rock3', 140, ISLAND_H + 110]]
+        const wr: [string, number, number][] = [['water-rock1', -30, 120], ['water-rock2', ISLAND_W + 34, 560], ['water-rock3', 140, ISLAND_H + 110]]
         for (const [key, x, y] of wr) s.add.sprite(this.sx(x), this.sy(y), key).play({ key, startFrame: Phaser.Math.Between(0, 15) }).setDepth(-85)
     }
 
@@ -269,7 +282,7 @@ export class Island {
             if (!s.alive) return
             const x = this.sx(s.x)
             const y = this.sy(s.y)
-            sprite.setPosition(x, y).setDepth(y).setFlipX(s.facing === 'left')
+            sprite.setPosition(x, y).setDepth(y).setFlipX(this.face(s.facing) === 'left')
             shadow.setPosition(x, y - 2).setDepth(y - 1)
             const key = s.moving ? 'sheep-move' : i % 2 ? 'sheep-grass' : 'sheep-idle'
             if (sprite.anims.currentAnim?.key !== key) sprite.play(key)
@@ -282,8 +295,8 @@ export class Island {
                 fx(this.scene, 'splash', this.sx(raider.x), this.sy(raider.y), 0.9)
             }
             this.raider.setPosition(this.sx(raider.x), this.sy(raider.y))
-            if (raider.attacking && !this.raider.busy) this.raider.act('attack', raider.facing)
-            else this.raider.pose(raider.facing, raider.moving)
+            if (raider.attacking && !this.raider.busy) this.raider.act('attack', this.face(raider.facing))
+            else this.raider.pose(this.face(raider.facing), raider.moving)
         } else if (this.raiderVisible) {
             this.raiderVisible = false
             fx(this.scene, 'dust', this.raider.x, this.raider.y - 20, 1.6)

@@ -1,7 +1,12 @@
 import Phaser from 'phaser'
 import {
+    ARENA_W,
     atGate,
+    BRIDGE_Y,
     distance,
+    ISLAND_W,
+    SOLDIER_TYPES,
+    STRAIT,
     KEG_RADIUS,
     LOADS,
     nearestTarget,
@@ -21,12 +26,13 @@ import {
     type SheepState,
     type ShopId,
     type Side,
+    type SoldierState,
     type UnitState,
 } from '@gogrow/shared'
 import { net } from '../net.ts'
 import { Island } from '../Island.ts'
 import { Unit, type PawnAction } from '../Unit.ts'
-import { SHOP_ORDER, ShopMenu } from '../ShopMenu.ts'
+import { SHOP_KEYS, ShopMenu } from '../ShopMenu.ts'
 import { button, floatText, fx, label, ribbon, text, tiledPanel } from '../ui.ts'
 
 type StateMsg = Extract<ServerMessage, { t: 'state' }>
@@ -35,20 +41,23 @@ type EndMsg = Extract<ServerMessage, { t: 'end' }>
 const W = 1600
 const H = 900
 const HALF = 800
-const ISLAND_X = 48
+const ISLAND_X = 24
+const OPP_X = W - ISLAND_X - ISLAND_W
 const ISLAND_Y = 172
 /** Remote things are drawn this far in the past so there are always two snapshots to blend. */
 const INTERP_DELAY_MS = 100
 const SEND_INTERVAL_MS = 1000 / TICK_RATE
 /** If our predicted position drifts this far from the server's, snap to the server. */
 const RECONCILE_PX = 48
-const NUM_KEYS = ['ONE', 'TWO', 'THREE', 'FOUR', 'FIVE', 'SIX', 'SEVEN'] as const
+/** Train soldiers at the castle gate without opening the shop. */
+const TRAIN_KEYS = ['Z', 'X', 'C', 'V'] as const
 
 interface Hud {
     gold: Phaser.GameObjects.Text
     coin: Phaser.GameObjects.Image
     carry: Phaser.GameObjects.Image
     upgrades: Phaser.GameObjects.Image[]
+    army: Phaser.GameObjects.Text
     shown: number
 }
 
@@ -75,6 +84,10 @@ export class GameScene extends Phaser.Scene {
     private toast!: Phaser.GameObjects.Text
     private opponentName = 'Rival'
     private ended = false
+    private seat: 0 | 1 = 0
+    private soldiers = new Map<number, Unit>()
+    private bridge!: Phaser.GameObjects.Image
+    private bridgeStatus: 'none' | 'building' | 'up' = 'none'
 
     constructor() {
         super('game')
@@ -84,8 +97,11 @@ export class GameScene extends Phaser.Scene {
         return this.snaps.at(-1)?.msg ?? null
     }
 
-    create(data: { myName: string; opponentName: string }) {
+    create(data: { myName: string; opponentName: string; seat: 0 | 1 }) {
         this.ended = false
+        this.seat = data.seat
+        this.soldiers = new Map()
+        this.bridgeStatus = 'none'
         this.snaps = []
         this.pos = { ...SPAWN }
         this.facing = 'right'
@@ -95,7 +111,11 @@ export class GameScene extends Phaser.Scene {
 
         this.add.tileSprite(0, 0, W, H, 'water').setOrigin(0).setDepth(-100)
         this.myIsland = new Island(this, ISLAND_X, ISLAND_Y, 'blue', 'red')
-        this.oppIsland = new Island(this, HALF + ISLAND_X, ISLAND_Y, 'red', 'blue')
+        this.oppIsland = new Island(this, OPP_X, ISLAND_Y, 'red', 'blue', true)
+        this.bridge = this.add
+            .image(ISLAND_X + ISLAND_W + STRAIT / 2, ISLAND_Y + BRIDGE_Y, 'bridge')
+            .setDepth(-70)
+            .setVisible(false)
         this.me = new Unit(this, 'blue', 'pawn', data.myName)
         this.opp = new Unit(this, 'red', 'pawn', data.opponentName)
         this.me.setPosition(this.myIsland.sx(SPAWN.x), this.myIsland.sy(SPAWN.y))
@@ -103,7 +123,7 @@ export class GameScene extends Phaser.Scene {
         this.spawnClouds()
 
         this.buildHud(data.myName, data.opponentName)
-        this.shop = new ShopMenu(this, ISLAND_X + 352, ISLAND_Y + 345, (id) => this.buy(id), () => this.shop.close())
+        this.shop = new ShopMenu(this, ISLAND_X + 352, 470, (id) => this.buy(id), () => this.shop.close())
         this.aimRing = this.add.graphics().setDepth(9600)
         this.bindKeys()
 
@@ -142,7 +162,7 @@ export class GameScene extends Phaser.Scene {
         this.timerText = label(this, W / 2, 58, '3:00', 44).setOrigin(0.5).setDepth(10001)
 
         this.hint = label(this, ISLAND_X + 352, H - 34, '', 17, '#f3f7ff').setOrigin(0.5).setDepth(10000)
-        this.logText = label(this, HALF + ISLAND_X + 352, H - 34, '', 17, '#ffe7c2').setOrigin(0.5).setDepth(10000)
+        this.logText = label(this, OPP_X + 352, H - 34, '', 17, '#ffe7c2').setOrigin(0.5).setDepth(10000)
         this.toast = label(this, ISLAND_X + 352, ISLAND_Y + 40, '', 26, '#ffd0c4').setOrigin(0.5).setDepth(25000).setAlpha(0)
     }
 
@@ -165,7 +185,8 @@ export class GameScene extends Phaser.Scene {
                 .setDepth(d)
                 .setAlpha(0.2),
         )
-        return { gold, coin, carry, upgrades, shown: -1 }
+        const army = label(this, at(160), 154, '', 18, '#ffffff').setOrigin(dir === 1 ? 0 : 1, 0.5).setDepth(d)
+        return { gold, coin, carry, upgrades, army, shown: -1 }
     }
 
     private updateHud(side: Side, p: PlayerState) {
@@ -181,6 +202,16 @@ export class GameScene extends Phaser.Scene {
         UPGRADE_IDS.forEach((id, i) => hud.upgrades[i]!.setAlpha(p.upgrades[id] ? 1 : 0.2))
     }
 
+    private updateArmyHud(msg: StateMsg) {
+        for (const side of ['you', 'opponent'] as Side[]) {
+            const count = msg.soldiers.filter((s) => s.mine === (side === 'you')).length
+            const order = msg[side].order
+            this.huds[side].army
+                .setText(count || order === 'charge' ? `${count} soldiers · ${order === 'charge' ? 'CHARGE' : 'DEFEND'}` : '')
+                .setColor(order === 'charge' ? '#ffb199' : '#bfe8ff')
+        }
+    }
+
     // ---------- input ----------
 
     private bindKeys() {
@@ -194,11 +225,23 @@ export class GameScene extends Phaser.Scene {
             this.shop.close()
             this.aiming = null
         })
-        NUM_KEYS.forEach((k, i) =>
+        for (const [key, id] of Object.entries(SHOP_KEYS)) {
+            kb.on(`keydown-${key}`, () => {
+                if (this.shop.isOpen) this.buy(id)
+            })
+        }
+        TRAIN_KEYS.forEach((k, i) =>
             kb.on(`keydown-${k}`, () => {
-                if (this.shop.isOpen) this.buy(SHOP_ORDER[i]!)
+                if (this.shop.isOpen || this.ended) return
+                if (!atGate(this.pos)) return this.showToast('Train soldiers at your castle gate')
+                this.buy(SOLDIER_TYPES[i]!)
             }),
         )
+        kb.on('keydown-Q', () => {
+            const me = this.latest?.you
+            if (!me || this.ended) return
+            net.send({ t: 'order', order: me.order === 'charge' ? 'defend' : 'charge' })
+        })
         this.input.mouse?.disableContextMenu()
         this.input.on('pointerdown', (p: Phaser.Input.Pointer) => {
             if (p.rightButtonDown()) {
@@ -224,7 +267,7 @@ export class GameScene extends Phaser.Scene {
         if (!atGate(this.pos)) return this.showToast('Walk to your castle gate to shop')
         if (me.effects.fireMs > 0) return this.showToast('Your castle is on fire!')
         this.aiming = null
-        this.shop.open(me)
+        this.shop.open(me, this.bridgeStatus !== 'none')
     }
 
     private buy(id: ShopId) {
@@ -306,12 +349,66 @@ export class GameScene extends Phaser.Scene {
         const oa = a.msg.opponent
         const ob = b.msg.opponent
         const pawn = lerpUnit(oa.pawn, ob.pawn, t)
-        this.opp.pose(pawn.facing, pawn.moving, ob.carrying)
+        this.opp.pose(this.oppIsland.face(pawn.facing), pawn.moving, ob.carrying)
         this.opp.setStunned(ob.effects.stunMs > 0)
         this.opp.setPosition(this.oppIsland.sx(pawn.x), this.oppIsland.sy(pawn.y))
 
         this.myIsland.renderUnits(lerpSheep(a.msg.you.sheep, b.msg.you.sheep, t), lerpRaider(a.msg.you.raider, b.msg.you.raider, t))
         this.oppIsland.renderUnits(lerpSheep(oa.sheep, ob.sheep, t), lerpRaider(oa.raider, ob.raider, t))
+        this.renderSoldiers(a.msg.soldiers, b.msg.soldiers, t)
+    }
+
+    // ---------- army ----------
+
+    /** Arena coordinates -> screen. Seat 1 sees the arena mirrored so its island is on the left. */
+    private ax(x: number) {
+        return ISLAND_X + (this.seat === 0 ? x : ARENA_W - x)
+    }
+
+    private ay(y: number) {
+        return ISLAND_Y + y
+    }
+
+    private arenaFacing(f: Facing): Facing {
+        return this.seat === 0 ? f : f === 'left' ? 'right' : 'left'
+    }
+
+    private renderSoldiers(a: SoldierState[], b: SoldierState[], t: number) {
+        const prev = new Map(a.map((s) => [s.id, s]))
+        const alive = new Set<number>()
+        for (const s of b) {
+            alive.add(s.id)
+            let unit = this.soldiers.get(s.id)
+            if (!unit) {
+                unit = new Unit(this, s.mine ? 'blue' : 'red', s.type, null)
+                this.soldiers.set(s.id, unit)
+            }
+            const p = prev.get(s.id)
+            const x = p ? p.x + (s.x - p.x) * t : s.x
+            const y = p ? p.y + (s.y - p.y) * t : s.y
+            unit.setPosition(this.ax(x), this.ay(y))
+            unit.setHealth(s.hp, s.maxHp)
+            const facing = this.arenaFacing(s.facing)
+            if (s.action === 'attack' && !unit.busy) unit.act('attack', facing)
+            else unit.pose(facing, s.action === 'run')
+        }
+        for (const [id, unit] of this.soldiers) {
+            if (alive.has(id)) continue
+            unit.destroy()
+            this.soldiers.delete(id)
+        }
+    }
+
+    private renderBridge(status: 'none' | 'building' | 'up', progress: number) {
+        this.bridgeStatus = status
+        this.bridge.setVisible(status !== 'none')
+        const w = this.bridge.width
+        // Planks appear from our side while it's being built.
+        const shown = status === 'building' ? Math.max(8, w * progress) : w
+        this.bridge.setCrop(0, 0, shown, this.bridge.height)
+        if (status === 'building' && Math.random() < 0.15) {
+            fx(this, 'dust', this.bridge.x - w / 2 + shown, this.bridge.y + Phaser.Math.Between(-20, 20), 0.8, 9000)
+        }
     }
 
     private updatePrompts() {
@@ -327,7 +424,7 @@ export class GameScene extends Phaser.Scene {
         if (this.stunned) prompt = 'STUNNED!'
         else if (me.carrying) prompt = atGate(this.pos) && me.effects.fireMs > 0 ? 'Castle on fire!' : `Bring ${LOADS[me.carrying].name} home!`
         else if (target) prompt = `SPACE  ${target.type === 'sheep' ? 'Catch' : RESOURCE_SPOTS[target.index]!.kind === 'tree' ? 'Chop' : 'Mine'}`
-        else if (atGate(this.pos) && !this.shop.isOpen) prompt = 'E  Shop'
+        else if (atGate(this.pos) && !this.shop.isOpen) prompt = 'E Shop  ·  Z X C V Train'
         this.me.setPrompt(prompt)
 
         const g = this.aimRing.clear()
@@ -337,9 +434,9 @@ export class GameScene extends Phaser.Scene {
                 g.fillStyle(0xff3b2e, 0.18).fillCircle(p.worldX, p.worldY, KEG_RADIUS)
                 g.lineStyle(4, 0xff3b2e, 1).strokeCircle(p.worldX, p.worldY, KEG_RADIUS)
             }
-            this.hint.setText(`${SHOP[this.aiming].name}: click a spot on their island  •  ESC to cancel`)
+            this.hint.setText(`${SHOP[this.aiming].name}: click their island or the bridge  •  ESC to cancel`)
         } else {
-            this.hint.setText('WASD move  •  SPACE chop / mine / catch  •  E shop at castle')
+            this.hint.setText('WASD move  •  SPACE gather  •  E shop  •  ZXCV train  •  Q charge / defend')
         }
     }
 
@@ -352,9 +449,11 @@ export class GameScene extends Phaser.Scene {
         this.oppIsland.update(msg.opponent)
         this.updateHud('you', msg.you)
         this.updateHud('opponent', msg.opponent)
+        this.updateArmyHud(msg)
+        this.renderBridge(msg.bridge.status, msg.bridge.progress)
         if (this.shop.isOpen) {
             if (msg.you.effects.fireMs > 0 || msg.you.effects.stunMs > 0) this.shop.close()
-            else this.shop.update(msg.you)
+            else this.shop.update(msg.you, msg.bridge.status !== 'none')
         }
 
         const s = Math.ceil(msg.timeLeftMs / 1000)
@@ -366,7 +465,7 @@ export class GameScene extends Phaser.Scene {
     }
 
     private onEvent(e: GameEvent) {
-        const mine = e.island === 'you'
+        const mine = 'island' in e ? e.island === 'you' : false
         const island = mine ? this.myIsland : this.oppIsland
         const pawn = mine ? this.me : this.opp
         switch (e.kind) {
@@ -412,10 +511,78 @@ export class GameScene extends Phaser.Scene {
                 island.shoot(e.x, e.y, mine ? 'blue' : 'red')
                 this.pushLog(`${mine ? 'Your' : `${this.opponentName}'s`} tower shot a raider`)
                 return
+            case 'arrow':
+                return this.arrow(this.ax(e.x1), this.ay(e.y1) - 40, this.ax(e.x2), this.ay(e.y2) - 30, e.mine ? 'blue' : 'red')
+            case 'hit': {
+                const x = this.ax(e.x) + Phaser.Math.Between(-10, 10)
+                floatText(this, x, this.ay(e.y) - 90, `-${e.amount}`, '#ff8a7a', 20)
+                return
+            }
+            case 'heal':
+                fx(this, `${e.mine ? 'blue' : 'red'}-monk-heal-effect`, this.ax(e.x), this.ay(e.y) - 40, 0.8, 9200)
+                floatText(this, this.ax(e.x), this.ay(e.y) - 90, `+${e.amount}`, '#9cff8a', 20)
+                return
+            case 'die':
+                fx(this, 'dust', this.ax(e.x), this.ay(e.y) - 20, 1.6, 9000)
+                fx(this, 'explosion2', this.ax(e.x), this.ay(e.y) - 30, 0.5, 9001)
+                return
+            case 'spawn':
+                fx(this, 'dust', this.ax(e.x), this.ay(e.y), 1.3, 9000)
+                return
+            case 'plunder': {
+                const gate = island.gate
+                floatText(this, gate.x, gate.y - 110, `-${e.amount}`, '#ff6b5b', 30)
+                this.flyCoins(gate, this.huds[mine ? 'opponent' : 'you'].coin, 2)
+                if (mine) this.cameras.main.shake(90, 0.003)
+                return
+            }
+            case 'bridge':
+                if (e.status === 'building') this.showToast('A bridge is being built!', '#ffe7a8')
+                if (e.status === 'up') {
+                    this.showToast('The bridge is up! Armies can cross', '#ffe7a8')
+                    this.cameras.main.shake(200, 0.004)
+                }
+                if (e.status === 'destroyed') {
+                    this.showToast('The bridge was blown up!', '#ff9b8a')
+                    for (let i = 0; i < 4; i++) {
+                        fx(this, 'splash', this.bridge.x - 70 + i * 46, this.bridge.y + 20, 0.8, 9000)
+                    }
+                }
+                return
+            case 'charge':
+                if (e.order === 'charge') {
+                    this.banner(mine ? 'CHARGE!' : `${this.opponentName} CHARGES!`, mine ? '#bfe8ff' : '#ff9b8a')
+                } else this.pushLog(`${mine ? 'You' : this.opponentName}: defend`)
+                return
         }
     }
 
     // ---------- juice ----------
+
+    private arrow(x1: number, y1: number, x2: number, y2: number, team: 'blue' | 'red') {
+        const a = this.add.image(x1, y1, `${team}-arrow`).setDepth(9300)
+        a.setRotation(Phaser.Math.Angle.Between(x1, y1, x2, y2))
+        const lift = Math.min(80, Math.abs(x2 - x1) / 4)
+        this.tweens.addCounter({
+            from: 0,
+            to: 1,
+            duration: 260,
+            onUpdate: (tw) => {
+                const k = tw.getValue() ?? 0
+                const x = x1 + (x2 - x1) * k
+                const y = y1 + (y2 - y1) * k - Math.sin(k * Math.PI) * lift
+                a.setRotation(Phaser.Math.Angle.Between(a.x, a.y, x, y))
+                a.setPosition(x, y)
+            },
+            onComplete: () => a.destroy(),
+        })
+    }
+
+    private banner(msg: string, color: string) {
+        const t = label(this, W / 2, H / 2 - 80, msg, 72, color).setOrigin(0.5).setDepth(30000).setScale(0.4)
+        this.tweens.add({ targets: t, scale: 1, duration: 260, ease: 'Back.easeOut' })
+        this.tweens.add({ targets: t, alpha: 0, y: t.y - 40, delay: 700, duration: 350, onComplete: () => t.destroy() })
+    }
 
     private popIcon(key: string, x: number, y: number) {
         const img = this.add.image(x, y, key).setDepth(9500).setScale(0.2)

@@ -16,6 +16,7 @@ import {
 } from '@gogrow/shared'
 import type { Match, Participant } from './match.ts'
 
+const SOLDIER_PICKS: ShopId[] = ['warrior', 'archer', 'lancer', 'warrior', 'monk']
 const BOT_NAMES = ['Sir Botsalot', 'Lord Pixel', 'Duke Chopper', 'Baron Bleat']
 const THINK_MS = 50
 /** The bot swings a bit slower than a fast human can mash. */
@@ -41,14 +42,21 @@ export class Bot implements Participant {
     private think() {
         const match = this.match
         if (!match) return
-        const { you, opponent } = match.view(this)
+        const { you, opponent, soldiers, bridge } = match.view(this)
         this.swingIn -= THINK_MS
         this.shopIn -= THINK_MS
         if (you.effects.stunMs > 0) return
 
-        if (atGate(you.pawn) && this.shopIn <= 0) {
-            this.shopIn = 1500
-            const pick = this.shoppingList(you.gold, you.upgrades, opponent.raider !== null)
+        // Army: charge once we have a squad and a way across, fall back when outnumbered.
+        const mine = soldiers.filter((s) => s.mine).length
+        const theirs = soldiers.length - mine
+        const order = bridge.status === 'up' && mine >= 3 && mine >= theirs ? 'charge' : 'defend'
+        if (order !== you.order) match.handle(this, { t: 'order', order })
+
+        if (atGate(you.pawn, 8) && this.shopIn <= 0) {
+            this.shopIn = 1200
+            const army = { mine, theirs, bridgeDown: bridge.status === 'none' }
+            const pick = this.shoppingList(you.gold, you.upgrades, opponent.raider !== null, army)
             if (pick && you.cooldowns[pick] === 0) {
                 const target = SHOP[pick].targeted ? { x: opponent.pawn.x, y: opponent.pawn.y } : {}
                 match.handle(this, { t: 'buy', id: pick, ...target })
@@ -78,9 +86,17 @@ export class Bot implements Participant {
         this.walkTo(best.p, REACH - 14)
     }
 
-    private shoppingList(gold: number, upgrades: Record<string, boolean>, raiderBusy: boolean): ShopId | null {
+    private shoppingList(
+        gold: number,
+        upgrades: Record<string, boolean>,
+        raiderBusy: boolean,
+        army: { mine: number; theirs: number; bridgeDown: boolean },
+    ): ShopId | null {
         if (!upgrades.pickaxe && gold >= SHOP.pickaxe.cost + 40) return 'pickaxe'
         if (!upgrades.axe && gold >= SHOP.axe.cost + 40) return 'axe'
+        if (army.theirs > army.mine && gold >= SHOP.warrior.cost) return SOLDIER_PICKS[Math.floor(Math.random() * 3)]!
+        if (army.mine < 4 && gold >= 140) return SOLDIER_PICKS[Math.floor(Math.random() * SOLDIER_PICKS.length)]!
+        if (army.bridgeDown && army.mine >= 3 && gold >= SHOP.bridge.cost + 20) return 'bridge'
         if (gold >= 180 && Math.random() < 0.5) return 'keg'
         if (gold >= 260 && !raiderBusy && Math.random() < 0.4) return 'raider'
         if (!upgrades.boots && gold >= 200) return 'boots'

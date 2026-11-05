@@ -4,13 +4,20 @@ import {
     clamp,
     distance,
     FIRE_MS,
+    BRIDGE_HALF,
+    BRIDGE_Y,
+    ISLAND_W,
     isShopId,
+    KEG_UNIT_DAMAGE,
+    STRAIT,
+    toArena,
     nearestTarget,
     KEG_FUSE_MS,
     KEG_RADIUS,
     KEG_STUN_MS,
     LOADS,
     MATCH_DURATION_MS,
+    MAX_SOLDIERS,
     MEADOW,
     RAIDER_LIFETIME_MS,
     RAIDER_REACH,
@@ -44,6 +51,7 @@ import {
     type ShopId,
     type Side,
 } from '@gogrow/shared'
+import { Army, type ArenaEvent, type SeatIndex } from './army.ts'
 
 /** Anything that can sit in a match: a websocket connection or a bot. */
 export interface Participant {
@@ -51,9 +59,10 @@ export interface Participant {
     send(msg: ServerMessage): void
 }
 
-type PendingEvent = DistributiveOmit<GameEvent, 'island'>
+type PendingEvent = DistributiveOmit<GameEvent, 'island'> | ArenaEvent
 
 interface Seat {
+    index: SeatIndex
     participant: Participant
     state: PlayerState
     lastMoveAt: number
@@ -64,11 +73,15 @@ interface Seat {
     sheepRespawnMs: number[]
     raiderWindupMs: number
     raiderAge: number
+    /** After a soldier stuns the worker, give them a moment to act before the next one. */
+    smackImmuneUntil: number
 }
 
 /** Extra reach for network jitter between what the client saw and what the server has. */
 const RANGE_SLACK = 10
 const DT_CAP_MS = 250
+/** Time a worker can act between soldier stuns, so armies can't stun-lock them. */
+const SMACK_GRACE_MS = 2_000
 // Dev/playtest overrides, e.g. START_GOLD=500 MATCH_MS=30000 npm run dev:server
 const START_GOLD = Number(process.env.START_GOLD ?? STARTING_GOLD)
 const MATCH_MS = Number(process.env.MATCH_MS ?? MATCH_DURATION_MS)
@@ -89,6 +102,7 @@ function freshSheep(): SheepState {
 function freshPlayer(name: string): PlayerState {
     return {
         name,
+        order: 'defend',
         gold: START_GOLD,
         pawn: { ...SPAWN, facing: 'right', moving: false },
         carrying: null,
@@ -111,11 +125,13 @@ export class Match {
     private timer: ReturnType<typeof setInterval> | null = null
     private lastTick = 0
     private finished = false
-    private pending: { island: Seat; event: PendingEvent }[] = []
+    private pending: { island?: Seat; owner?: Seat; event: PendingEvent }[] = []
+    private army: Army
     onFinish: (() => void) | null = null
 
     constructor(a: Participant, b: Participant) {
-        const seat = (participant: Participant): Seat => ({
+        const seat = (participant: Participant, index: SeatIndex): Seat => ({
+            index,
             participant,
             state: freshPlayer(participant.name),
             lastMoveAt: performance.now(),
@@ -124,14 +140,28 @@ export class Match {
             sheepRespawnMs: Array.from({ length: SHEEP_COUNT }, () => 0),
             raiderWindupMs: 0,
             raiderAge: 0,
+            smackImmuneUntil: 0,
         })
-        this.seats = [seat(a), seat(b)]
+        this.seats = [seat(a, 0), seat(b, 1)]
+        this.army = new Army({
+            player: (i) => this.seats[i].state,
+            emitArena: (event, owner) => this.pending.push({ event, owner: owner === undefined ? undefined : this.seats[owner] }),
+            plunder: (victim, amount) => this.plunder(this.seats[victim], amount),
+            smackPawn: (i) => {
+                const seat = this.seats[i]
+                const now = performance.now()
+                if (seat.state.effects.stunMs > 0 || now < seat.smackImmuneUntil) return
+                seat.smackImmuneUntil = now + RAIDER_STUN_MS + SMACK_GRACE_MS
+                this.emit(seat, { kind: 'smack' })
+                this.hurtPawn(seat, RAIDER_STUN_MS)
+            },
+        })
     }
 
     start() {
         const [a, b] = this.seats
-        a.participant.send({ t: 'start', opponentName: b.state.name, durationMs: MATCH_MS })
-        b.participant.send({ t: 'start', opponentName: a.state.name, durationMs: MATCH_MS })
+        a.participant.send({ t: 'start', opponentName: b.state.name, durationMs: MATCH_MS, seat: 0 })
+        b.participant.send({ t: 'start', opponentName: a.state.name, durationMs: MATCH_MS, seat: 1 })
         this.lastTick = performance.now()
         for (const s of this.seats) s.lastMoveAt = this.lastTick
         this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE)
@@ -141,7 +171,13 @@ export class Match {
     /** Read-only view used by bots to make decisions. */
     view(p: Participant) {
         const me = this.seat(p)
-        return { you: me.state, opponent: this.other(me).state, timeLeftMs: this.timeLeftMs }
+        return {
+            you: me.state,
+            opponent: this.other(me).state,
+            timeLeftMs: this.timeLeftMs,
+            soldiers: this.army.snapshot(me.index),
+            bridge: this.army.bridge,
+        }
     }
 
     leave(p: Participant) {
@@ -173,6 +209,12 @@ export class Match {
                 return this.swing(me)
             case 'buy':
                 return this.buy(me, msg.id, msg.x, msg.y)
+            case 'order':
+                if (s.order !== msg.order) {
+                    s.order = msg.order
+                    this.emit(me, { kind: 'charge', order: msg.order })
+                }
+                return null
         }
     }
 
@@ -263,12 +305,23 @@ export class Match {
         const opp = this.other(me)
         const o = opp.state
         if (id === 'raider' && o.raider) return 'A raider is already there'
+        if (id === 'bridge' && this.army.bridge.status !== 'none') return 'The bridge is already there'
+        if (item.kind === 'army' && this.army.count(me.index) >= MAX_SOLDIERS) return `Army is full (${MAX_SOLDIERS})`
 
         s.gold -= item.cost
         s.cooldowns[id] = item.cooldownMs
         this.emit(item.kind === 'attack' ? opp : me, { kind: 'buy', item: id })
 
         switch (id) {
+            case 'warrior':
+            case 'archer':
+            case 'lancer':
+            case 'monk':
+                this.army.spawn(me.index, id)
+                break
+            case 'bridge':
+                this.army.buildBridge()
+                break
             case 'axe':
             case 'pickaxe':
             case 'boots':
@@ -282,14 +335,17 @@ export class Match {
             case 'fire':
                 o.effects.fireMs = FIRE_MS
                 break
-            case 'keg':
+            case 'keg': {
+                // Kegs can also be dropped on the bridge (past the island's inner edge).
+                const onBridge = Math.abs(ty! - BRIDGE_Y) <= BRIDGE_HALF && tx! > BOUNDS.maxX
                 o.kegs.push({
                     id: kegIds++,
-                    x: clamp(tx!, BOUNDS.minX, BOUNDS.maxX),
+                    x: clamp(tx!, BOUNDS.minX, onBridge ? ISLAND_W + STRAIT / 2 : BOUNDS.maxX),
                     y: clamp(ty!, BOUNDS.minY, BOUNDS.maxY),
                     fuseMs: KEG_FUSE_MS,
                 })
                 break
+            }
             case 'raider': {
                 // Land on the island edge farthest from their worker.
                 const x = o.pawn.x < BOUNDS.maxX / 2 ? BOUNDS.maxX : BOUNDS.minX
@@ -339,6 +395,7 @@ export class Match {
             this.tryDeposit(seat)
         }
 
+        this.army.tick(dt)
         this.broadcast()
 
         if (this.timeLeftMs <= 0) {
@@ -394,6 +451,8 @@ export class Match {
         for (const keg of blown) {
             this.emit(seat, { kind: 'explode', x: keg.x, y: keg.y })
             if (distance(keg, s.pawn) <= KEG_RADIUS) this.hurtPawn(seat, KEG_STUN_MS)
+            this.army.blast(toArena(seat.index, keg), KEG_RADIUS, KEG_UNIT_DAMAGE)
+            if (keg.x > ISLAND_W - 50 && Math.abs(keg.y - BRIDGE_Y) <= BRIDGE_HALF + 40) this.army.destroyBridge()
             s.resources.forEach((r, i) => {
                 if (r.regrowMs === 0 && distance(keg, RESOURCE_SPOTS[i]!) <= KEG_RADIUS) {
                     r.hp = 0
@@ -455,6 +514,14 @@ export class Match {
         r.moving = true
     }
 
+    private plunder(victim: Seat, amount: number) {
+        const stolen = Math.min(victim.state.gold, amount)
+        if (stolen <= 0) return
+        victim.state.gold -= stolen
+        this.other(victim).state.gold += stolen
+        this.emit(victim, { kind: 'plunder', amount: stolen })
+    }
+
     private hurtPawn(seat: Seat, stunMs: number) {
         const s = seat.state
         s.effects.stunMs = Math.max(s.effects.stunMs, stunMs)
@@ -492,14 +559,18 @@ export class Match {
                 timeLeftMs: this.timeLeftMs,
                 you: seat.state,
                 opponent: this.other(seat).state,
+                soldiers: this.army.snapshot(seat.index),
+                bridge: this.army.bridge,
             })
         }
         // Each event is delivered to both players, with `island` relative to the receiver.
         if (!all.length) return
         for (const seat of this.seats) {
-            const events = all.map(({ island, event }) => {
-                const side: Side = island === seat ? 'you' : 'opponent'
-                return { ...event, island: side } as GameEvent
+            const events = all.map(({ island, owner, event }) => {
+                const out: Record<string, unknown> = { ...event }
+                if (island) out.island = (island === seat ? 'you' : 'opponent') satisfies Side
+                if (owner) out.mine = owner === seat
+                return out as unknown as GameEvent
             })
             seat.participant.send({ t: 'events', events })
         }
@@ -535,6 +606,8 @@ function isValidAction(msg: GameAction): boolean {
             )
         case 'swing':
             return true
+        case 'order':
+            return msg.order === 'charge' || msg.order === 'defend'
         case 'buy':
             return (
                 isShopId(msg.id) &&
