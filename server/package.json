@@ -1,0 +1,18 @@
+{
+    "name": "@gogrow/server",
+    "private": true,
+    "type": "module",
+    "scripts": {
+        "dev": "node --watch src/main.ts",
+        "start": "node src/main.ts",
+        "typecheck": "tsc -p ."
+    },
+    "dependencies": {
+        "@gogrow/shared": "*",
+        "ws": "^8.18.3"
+    },
+    "devDependencies": {
+        "@types/node": "^24.0.0",
+        "@types/ws": "^8.18.1"
+    }
+}
