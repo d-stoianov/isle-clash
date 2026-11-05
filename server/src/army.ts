@@ -24,7 +24,7 @@ import {
     type Point,
     type SoldierState,
     type SoldierType,
-} from '@gogrow/shared'
+} from '@isle-clash/shared'
 
 export type SeatIndex = 0 | 1
 

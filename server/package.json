@@ -1,5 +1,5 @@
 {
-    "name": "@gogrow/server",
+    "name": "@isle-clash/server",
     "private": true,
     "type": "module",
     "scripts": {
@@ -8,7 +8,7 @@
         "typecheck": "tsc -p ."
     },
     "dependencies": {
-        "@gogrow/shared": "*",
+        "@isle-clash/shared": "*",
         "ws": "^8.18.3"
     },
     "devDependencies": {

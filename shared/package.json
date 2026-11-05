@@ -1,5 +1,5 @@
 {
-    "name": "@gogrow/shared",
+    "name": "@isle-clash/shared",
     "private": true,
     "type": "module",
     "exports": { ".": "./src/index.ts" },

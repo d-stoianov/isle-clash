@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import { SHOP, type PlayerState, type ShopId } from '@gogrow/shared'
+import { SHOP, type PlayerState, type ShopId } from '@isle-clash/shared'
 import { label, panel, ribbon, text, tiledPanel, INK } from './ui.ts'
 
 /** Shop layout: rows of item ids, each with the key that buys it while the shop is open. */

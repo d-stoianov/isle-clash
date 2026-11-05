@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import type { Facing, LoadKind } from '@gogrow/shared'
+import type { Facing, LoadKind } from '@isle-clash/shared'
 import type { Team } from './scenes/BootScene.ts'
 import { label } from './ui.ts'
 

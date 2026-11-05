@@ -1,5 +1,5 @@
 {
-    "name": "gogrow",
+    "name": "isle-clash",
     "private": true,
     "type": "module",
     "workspaces": ["shared", "server", "client"],

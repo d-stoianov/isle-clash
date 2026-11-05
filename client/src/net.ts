@@ -1,5 +1,5 @@
 import Phaser from 'phaser'
-import type { ClientMessage, ServerMessage } from '@gogrow/shared'
+import type { ClientMessage, ServerMessage } from '@isle-clash/shared'
 
 const SERVER_URL: string =
     import.meta.env.VITE_SERVER_URL ??

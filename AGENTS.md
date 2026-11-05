@@ -1,10 +1,10 @@
 # AGENTS.md
 
-Guidance for AI coding agents and contributors working on GoGrow. [README.md](README.md) has the full rules, controls and setup.
+Guidance for AI coding agents and contributors working on Isle Clash. [README.md](README.md) has the full rules, controls and setup.
 
 ## What we're building
 
-GoGrow is a **1v1, real-time, skill-based duel** in the browser with a **3-minute timer**. It's the game you pick to settle who's better: *"Let's go 1v1 in GoGrow! I'm gonna beat you up."*
+Isle Clash is a **1v1, real-time, skill-based duel** in the browser with a **3-minute timer**. It's the game you pick to settle who's better: *"Let's go 1v1 in Isle Clash! I'm gonna beat you up."*
 
 - Two rival villages on **floating islands**, shown side by side on a split screen. **Both islands are always visible.**
 - Each player controls a **worker** with idle, run, carry and tool-swing animations and a floating nickname.
@@ -67,7 +67,7 @@ npm workspaces monorepo:
 
 - TypeScript everywhere, `strict`, `noUncheckedIndexedAccess`.
 - **`erasableSyntaxOnly` is on.** Node runs the server's `.ts` files directly, so `enum`, `namespace` and constructor parameter properties are not allowed.
-- Use relative imports with the `.ts` extension. Import shared code from `@gogrow/shared`.
+- Use relative imports with the `.ts` extension. Import shared code from `@isle-clash/shared`.
 - Formatting: 4 spaces, single quotes, no semicolons (Prettier config in the repo root).
 - All tunable numbers and layout go in `shared/src/config.ts`.
 - Text uses `label()` (Lilita One with a dark outline and shadow) or `text()` for ink on paper.

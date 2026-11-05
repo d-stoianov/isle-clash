@@ -1,7 +1,7 @@
 import { createServer } from 'node:http'
 import { randomInt } from 'node:crypto'
 import { WebSocketServer, type WebSocket } from 'ws'
-import type { ClientMessage, ServerMessage } from '@gogrow/shared'
+import type { ClientMessage, ServerMessage } from '@isle-clash/shared'
 import { Match, type Participant } from './match.ts'
 import { Bot } from './bot.ts'
 
@@ -117,4 +117,4 @@ wss.on('connection', (ws) => {
     })
 })
 
-http.listen(PORT, () => console.log(`GoGrow server listening on :${PORT}`))
+http.listen(PORT, () => console.log(`Isle Clash server listening on :${PORT}`))

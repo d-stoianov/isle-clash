@@ -3,7 +3,7 @@ import { net } from '../net.ts'
 import { button, FONT, label, ribbon, text, tiledPanel } from '../ui.ts'
 import type { Team } from './BootScene.ts'
 
-const NAME_KEY = 'gogrow:name'
+const NAME_KEY = 'isle-clash:name'
 const W = 1600
 const H = 900
 
@@ -28,9 +28,9 @@ export class MenuScene extends Phaser.Scene {
             this.tweens.add({ targets: cloud, x: W + 400, duration: dur, delay, repeat: -1 })
         }
 
-        const title = label(this, cx, 120, 'GoGrow!', 120, '#ffe066').setOrigin(0.5)
+        const title = label(this, cx, 120, 'Isle Clash!', 108, '#ffe066').setOrigin(0.5)
         this.tweens.add({ targets: title, y: 128, duration: 1600, yoyo: true, repeat: -1, ease: 'Sine.easeInOut' })
-        ribbon(this, 'blue', cx, 228, 620, 'Gather. Sabotage. Win in 3 minutes.', 26)
+        ribbon(this, 'blue', cx, 228, 620, 'Gather. Build an army. Raid their castle.', 26)
 
         tiledPanel(this, 'banner', cx, 520, 640, 520)
         text(this, cx, 362, 'YOUR NAME', 22, '#6b4a2a').setOrigin(0.5)

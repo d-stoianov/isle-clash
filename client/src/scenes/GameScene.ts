@@ -28,7 +28,7 @@ import {
     type Side,
     type SoldierState,
     type UnitState,
-} from '@gogrow/shared'
+} from '@isle-clash/shared'
 import { net } from '../net.ts'
 import { Island } from '../Island.ts'
 import { Unit, type PawnAction } from '../Unit.ts'

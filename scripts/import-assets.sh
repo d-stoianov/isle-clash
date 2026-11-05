@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Copies the art GoGrow uses out of Pixel Frog's "Tiny Swords (Free Pack)" into
+# Copies the art Isle Clash uses out of Pixel Frog's "Tiny Swords (Free Pack)" into
 # client/public/assets. The pack's license doesn't allow redistributing it, so the
 # assets are git-ignored and every developer imports them locally.
 #

@@ -16,7 +16,7 @@ import {
     type PlayerState,
     type RaiderState,
     type SheepState,
-} from '@gogrow/shared'
+} from '@isle-clash/shared'
 import type { Team } from './scenes/BootScene.ts'
 import { Unit } from './Unit.ts'
 import { fx, label } from './ui.ts'

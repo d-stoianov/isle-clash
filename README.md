@@ -1,8 +1,10 @@
-# GoGrow!
+# Isle Clash!
 
-> "Let's go 1v1 in GoGrow! I'm gonna beat you up."
+> "Let's go 1v1 in Isle Clash! I'm gonna beat you up."
 
-GoGrow is a fast-paced **1v1 competitive game** with a **3-minute timer**, played in the browser. Two rival villages sit on floating islands, facing each other across a strait. Each player runs a little worker who gathers resources and hauls them home for gold, then spends it on upgrades, sabotage and an **army**. Build a **bridge**, march your soldiers across and plunder the enemy castle. **Whoever has the most gold when the timer runs out wins.** It's built for settling arguments: send a friend a link and settle it on the islands.
+*Isle Clash started life as GoGrow. That name is reserved for a separate farming game.*
+
+Isle Clash is a fast-paced **1v1 competitive game** with a **3-minute timer**, played in the browser. Two rival villages sit on floating islands, facing each other across a strait. Each player runs a little worker who gathers resources and hauls them home for gold, then spends it on upgrades, sabotage and an **army**. Build a **bridge**, march your soldiers across and plunder the enemy castle. **Whoever has the most gold when the timer runs out wins.** It's built for settling arguments: send a friend a link and settle it on the islands.
 
 ## The concept
 
@@ -94,7 +96,7 @@ Nothing about the outcome is random. You win by:
 - Soldiers live in shared **arena coordinates** (island, strait, island). The second player's client mirrors them, so everyone sees their own island on the left.
 
 ```
-gogrow/
+isle-clash/
 ├── client/src/
 │   ├── scenes/       BootScene (assets, animations, 9-slice UI), MenuScene, GameScene
 │   ├── Island.ts     one floating island: terrain, castle, trees, gold, sheep, kegs, fire, tower, raider
@@ -142,8 +144,8 @@ All art comes from **[Tiny Swords (Free Pack)](https://pixelfrog-assets.itch.io/
 ### Deploying the server
 
 ```bash
-docker build -f server/Dockerfile -t gogrow-server .
-docker run -p 8080:8080 gogrow-server
+docker build -f server/Dockerfile -t isle-clash-server .
+docker run -p 8080:8080 isle-clash-server
 ```
 
 `GET /health` returns `ok`.

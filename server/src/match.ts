@@ -50,7 +50,7 @@ import {
     type SheepState,
     type ShopId,
     type Side,
-} from '@gogrow/shared'
+} from '@isle-clash/shared'
 import { Army, type ArenaEvent, type SeatIndex } from './army.ts'
 
 /** Anything that can sit in a match: a websocket connection or a bot. */

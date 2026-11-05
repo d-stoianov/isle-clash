@@ -13,7 +13,7 @@ import {
     type Point,
     type ServerMessage,
     type ShopId,
-} from '@gogrow/shared'
+} from '@isle-clash/shared'
 import type { Match, Participant } from './match.ts'
 
 const SOLDIER_PICKS: ShopId[] = ['warrior', 'archer', 'lancer', 'warrior', 'monk']
