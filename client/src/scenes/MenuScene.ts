@@ -1,8 +1,8 @@
 import Phaser from 'phaser'
 import { CROP_IDS } from '@gogrow/shared'
+import { CROP_PRODUCE_COL, cropFrame } from './BootScene.ts'
 import { net } from '../net.ts'
 import { button, FONT, text } from '../ui.ts'
-import { registerSprites } from '../sprites.ts'
 
 const NAME_KEY = 'gogrow:name'
 
@@ -16,17 +16,23 @@ export class MenuScene extends Phaser.Scene {
     }
 
     create() {
-        registerSprites(this)
         const cx = this.scale.width / 2
         const roomCode = new URLSearchParams(location.search).get('room')?.toUpperCase() ?? null
 
         text(this, cx, 120, 'GoGrow!', 72, '#c8f56b').setOrigin(0.5).setStroke('#0b130c', 12)
-        text(this, cx, 200, 'Out-farm your rival in 2 minutes.', 16, '#d9e7c9').setOrigin(0.5)
+        text(this, cx, 200, 'Out-farm your rival in 3 minutes.', 16, '#d9e7c9').setOrigin(0.5)
         text(this, cx, 228, 'Sabotage encouraged.', 16, '#ffb36b').setOrigin(0.5)
-        const row = [...CROP_IDS, 'lightning', 'drought', 'freeze', 'tornado']
-        row.forEach((key, i) => {
-            this.add.image(cx + (i - (row.length - 1) / 2) * 60, 285, key).setScale(4)
+        const row = [...CROP_IDS.map((id) => ['crops', cropFrame(id, CROP_PRODUCE_COL)] as const), ...(['lightning', 'drought', 'freeze', 'tornado'] as const).map((k) => [k, 0] as const)]
+        row.forEach(([key, frame], i) => {
+            this.add.image(cx + (i - (row.length - 1) / 2) * 64, 300, key, frame).setOrigin(0.5, 1).setScale(key === 'crops' ? 3 : 4)
         })
+        // Farmers strolling across the menu.
+        this.add.rectangle(0, 688, 1280, 32, 0x79bf56).setOrigin(0)
+        this.add.rectangle(0, 684, 1280, 4, 0x3d993d).setOrigin(0)
+        for (const [y, delay] of [[672, 0], [672, 3800]] as const) {
+            const farmer = this.add.sprite(-40, y, 'char-walk').setScale(3).play('walk-side')
+            this.tweens.add({ targets: farmer, x: 1320, duration: 9000, delay, repeat: -1 })
+        }
 
         const saved = safeGet(NAME_KEY) ?? `Farmer${Math.floor(Math.random() * 900 + 100)}`
         const dom = this.add.dom(cx, 360, 'input', [

@@ -3,3 +3,6 @@ dist
 .env
 .DS_Store
 *.log
+
+# Third-party art: license forbids redistribution. See README "Art assets".
+client/public/assets/

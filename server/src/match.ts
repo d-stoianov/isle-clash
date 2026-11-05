@@ -1,20 +1,32 @@
 import {
+    atShop,
+    BOUNDS,
+    CROP_IDS,
     CROPS,
+    distance,
     DROUGHT_DURATION_MS,
     DROUGHT_GROWTH_MULTIPLIER,
     FREEZE_DURATION_MS,
+    isCrop,
+    isItem,
     ITEM_IDS,
     ITEMS,
     MATCH_DURATION_MS,
+    PLAYER_SPEED,
+    PLOT_COUNT,
+    plotCenter,
+    PLOT_RANGE,
     RIPE_WINDOW_MS,
     SCARECROW_DURATION_MS,
+    SPAWN,
     STARTING_MONEY,
     TICK_RATE,
-    TILE_COUNT,
-    type ClientMessage,
+    type CropId,
+    type GameAction,
     type GameEvent,
     type ItemId,
     type PlayerState,
+    type PlotState,
     type ServerMessage,
     type Side,
 } from '@gogrow/shared'
@@ -25,20 +37,25 @@ export interface Participant {
     send(msg: ServerMessage): void
 }
 
-type GameAction = Extract<ClientMessage, { t: 'plant' | 'harvest' | 'use' }>
-
 interface Seat {
     participant: Participant
     state: PlayerState
     /** events queued for this seat, flushed every tick */
     events: GameEvent[]
+    lastMoveAt: number
 }
+
+/** Extra reach granted for network jitter between what the client saw and what the server has. */
+const RANGE_SLACK = 6
+const FACINGS = new Set(['down', 'up', 'left', 'right'])
 
 function freshPlayer(name: string): PlayerState {
     return {
         name,
         money: STARTING_MONEY,
-        tiles: Array.from({ length: TILE_COUNT }, () => ({ crop: null, progress: 0, witherInMs: 0 })),
+        avatar: { ...SPAWN, facing: 'down', moving: false },
+        seeds: Object.fromEntries(CROP_IDS.map((id) => [id, 0])) as Record<CropId, number>,
+        plots: Array.from({ length: PLOT_COUNT }, () => ({ crop: null, progress: 0, witherInMs: 0 })),
         effects: { droughtMs: 0, frozenMs: 0, scarecrowMs: 0 },
         cooldowns: Object.fromEntries(ITEM_IDS.map((id) => [id, 0])) as Record<ItemId, number>,
     }
@@ -57,6 +74,7 @@ export class Match {
             participant,
             state: freshPlayer(participant.name),
             events: [],
+            lastMoveAt: performance.now(),
         })
         this.seats = [seat(a), seat(b)]
     }
@@ -66,25 +84,20 @@ export class Match {
         a.participant.send({ t: 'start', opponentName: b.state.name, durationMs: MATCH_DURATION_MS })
         b.participant.send({ t: 'start', opponentName: a.state.name, durationMs: MATCH_DURATION_MS })
         this.lastTick = performance.now()
+        for (const s of this.seats) s.lastMoveAt = this.lastTick
         this.timer = setInterval(() => this.tick(), 1000 / TICK_RATE)
         this.broadcast()
-    }
-
-    has(p: Participant) {
-        return this.seats.some((s) => s.participant === p)
     }
 
     /** Read-only view used by bots to make decisions. */
     view(p: Participant) {
         const me = this.seat(p)
-        const opp = this.other(me)
-        return { you: me.state, opponent: opp.state, timeLeftMs: this.timeLeftMs }
+        return { you: me.state, opponent: this.other(me).state, timeLeftMs: this.timeLeftMs }
     }
 
     leave(p: Participant) {
         if (this.finished) return
-        const leaver = this.seat(p)
-        this.finish('opponent_left', this.other(leaver))
+        this.finish('opponent_left', this.other(this.seat(p)))
     }
 
     handle(p: Participant, msg: GameAction) {
@@ -97,48 +110,89 @@ export class Match {
     private apply(me: Seat, msg: GameAction): string | null {
         if (!isValidAction(msg)) return 'Invalid move'
         const s = me.state
-        if (s.effects.frozenMs > 0) return 'You are frozen!'
+        if (s.effects.frozenMs > 0) {
+            // Movement is dropped silently while frozen; the next snapshot snaps the client back.
+            return msg.t === 'move' ? null : 'You are frozen!'
+        }
 
         switch (msg.t) {
+            case 'move':
+                this.move(me, msg)
+                return null
+            case 'buy':
+                if (!atShop(s.avatar, RANGE_SLACK)) return 'Walk to the shop first'
+                return isCrop(msg.id) ? this.buySeed(s, msg.id) : this.useItem(me, msg.id, msg.plot)
             case 'plant': {
-                const tile = s.tiles[msg.tile]
-                const crop = CROPS[msg.crop]
-                if (!tile || !crop) return 'Invalid move'
-                if (tile.crop) return 'Tile is occupied'
-                if (s.money < crop.cost) return 'Not enough money'
-                s.money -= crop.cost
-                tile.crop = crop.id
-                tile.progress = 0
-                tile.witherInMs = 0
+                const plot = s.plots[msg.plot]!
+                if (!this.inReach(s, msg.plot)) return 'Too far away'
+                if (plot.crop) return 'Plot is occupied'
+                if (s.seeds[msg.crop] <= 0) return `No ${CROPS[msg.crop].name} seeds, visit the shop`
+                s.seeds[msg.crop]--
+                plot.crop = msg.crop
+                plot.progress = 0
+                plot.witherInMs = 0
                 return null
             }
             case 'harvest': {
-                const tile = s.tiles[msg.tile]
-                if (!tile?.crop) return 'Nothing to harvest'
-                if (tile.progress < 1) return 'Not ripe yet'
-                const amount = CROPS[tile.crop].sellPrice
+                const plot = s.plots[msg.plot]!
+                if (!this.inReach(s, msg.plot)) return 'Too far away'
+                if (!plot.crop) return 'Nothing to harvest'
+                if (plot.progress < 1) return 'Not ripe yet'
+                const amount = CROPS[plot.crop].sellPrice
                 s.money += amount
-                clearTile(tile)
-                this.emit(me, { kind: 'harvest', tile: msg.tile, amount })
+                clearPlot(plot)
+                this.emit(me, { kind: 'harvest', plot: msg.plot, amount })
                 return null
             }
-            case 'use':
-                return this.useItem(me, msg.item, msg.tile)
         }
     }
 
-    private useItem(me: Seat, itemId: ItemId, tileIndex?: number): string | null {
+    /**
+     * Clients move their own avatar for instant response. The server only checks the
+     * move is physically possible (speed + bounds) and clamps it otherwise.
+     */
+    private move(me: Seat, msg: Extract<GameAction, { t: 'move' }>) {
+        const now = performance.now()
+        const elapsed = Math.min(250, now - me.lastMoveAt)
+        me.lastMoveAt = now
+        const a = me.state.avatar
+        const maxStep = (PLAYER_SPEED * elapsed) / 1000 + 8
+        let x = clamp(msg.x, BOUNDS.minX, BOUNDS.maxX)
+        let y = clamp(msg.y, BOUNDS.minY, BOUNDS.maxY)
+        const d = distance(a, { x, y })
+        if (d > maxStep) {
+            x = a.x + ((x - a.x) / d) * maxStep
+            y = a.y + ((y - a.y) / d) * maxStep
+        }
+        a.x = x
+        a.y = y
+        a.facing = msg.facing
+        a.moving = msg.moving
+    }
+
+    private inReach(s: PlayerState, plot: number) {
+        return distance(s.avatar, plotCenter(plot)) <= PLOT_RANGE + RANGE_SLACK
+    }
+
+    private buySeed(s: PlayerState, id: CropId): string | null {
+        const crop = CROPS[id]
+        if (s.money < crop.cost) return 'Not enough money'
+        s.money -= crop.cost
+        s.seeds[id]++
+        return null
+    }
+
+    private useItem(me: Seat, itemId: ItemId, plotIndex?: number): string | null {
         const item = ITEMS[itemId]
-        if (!item) return 'Invalid item'
         const s = me.state
         if (s.cooldowns[itemId] > 0) return `${item.name} is on cooldown`
         if (s.money < item.cost) return 'Not enough money'
 
         const opp = this.other(me)
         if (item.targeted) {
-            const target = tileIndex === undefined ? undefined : opp.state.tiles[tileIndex]
-            if (!target) return 'Pick an enemy tile'
-            if (!target.crop) return 'That tile is empty'
+            const target = plotIndex === undefined ? undefined : opp.state.plots[plotIndex]
+            if (!target) return 'Pick an enemy plot'
+            if (!target.crop) return 'That plot is empty'
         }
 
         s.money -= item.cost
@@ -146,9 +200,7 @@ export class Match {
 
         if (item.kind === 'buff') {
             if (itemId === 'fertilizer') {
-                for (const t of s.tiles) {
-                    if (t.crop && t.progress < 1) ripen(t)
-                }
+                for (const p of s.plots) if (p.crop && p.progress < 1) ripen(p)
             } else if (itemId === 'scarecrow') {
                 s.effects.scarecrowMs = SCARECROW_DURATION_MS
             }
@@ -156,27 +208,28 @@ export class Match {
             return null
         }
 
-        const blocked = opp.state.effects.scarecrowMs > 0
+        const o = opp.state
+        const blocked = o.effects.scarecrowMs > 0
         if (blocked) {
-            opp.state.effects.scarecrowMs = 0
+            o.effects.scarecrowMs = 0
         } else {
-            const o = opp.state
             switch (itemId) {
                 case 'lightning':
-                    clearTile(o.tiles[tileIndex!]!)
+                    clearPlot(o.plots[plotIndex!]!)
                     break
                 case 'drought':
                     o.effects.droughtMs = DROUGHT_DURATION_MS
                     break
                 case 'freeze':
                     o.effects.frozenMs = FREEZE_DURATION_MS
+                    o.avatar.moving = false
                     break
                 case 'tornado':
-                    o.tiles.forEach(clearTile)
+                    o.plots.forEach(clearPlot)
                     break
             }
         }
-        this.emit(me, { kind: 'item', item: itemId, tile: tileIndex, blocked })
+        this.emit(me, { kind: 'item', item: itemId, plot: plotIndex, blocked })
         return null
     }
 
@@ -189,16 +242,16 @@ export class Match {
         for (const seat of this.seats) {
             const s = seat.state
             const growth = s.effects.droughtMs > 0 ? DROUGHT_GROWTH_MULTIPLIER : 1
-            s.tiles.forEach((tile, i) => {
-                if (!tile.crop) return
-                if (tile.progress < 1) {
-                    tile.progress = Math.min(1, tile.progress + (dt * growth) / CROPS[tile.crop].growMs)
-                    if (tile.progress >= 1) ripen(tile)
+            s.plots.forEach((plot, i) => {
+                if (!plot.crop) return
+                if (plot.progress < 1) {
+                    plot.progress = Math.min(1, plot.progress + (dt * growth) / CROPS[plot.crop].growMs)
+                    if (plot.progress >= 1) ripen(plot)
                 } else {
-                    tile.witherInMs -= dt
-                    if (tile.witherInMs <= 0) {
-                        clearTile(tile)
-                        this.emit(seat, { kind: 'wither', tile: i })
+                    plot.witherInMs -= dt
+                    if (plot.witherInMs <= 0) {
+                        clearPlot(plot)
+                        this.emit(seat, { kind: 'wither', plot: i })
                     }
                 }
             })
@@ -212,8 +265,7 @@ export class Match {
 
         if (this.timeLeftMs <= 0) {
             const [a, b] = this.seats
-            const winner =
-                a.state.money === b.state.money ? null : a.state.money > b.state.money ? a : b
+            const winner = a.state.money === b.state.money ? null : a.state.money > b.state.money ? a : b
             this.finish('time', winner)
         }
     }
@@ -223,13 +275,12 @@ export class Match {
         this.finished = true
         if (this.timer) clearInterval(this.timer)
         for (const seat of this.seats) {
-            const opp = this.other(seat)
             seat.participant.send({
                 t: 'end',
                 result: winner === null ? 'draw' : winner === seat ? 'win' : 'lose',
                 reason,
                 yourMoney: seat.state.money,
-                opponentMoney: opp.state.money,
+                opponentMoney: this.other(seat).state.money,
             })
         }
         this.onFinish?.()
@@ -237,16 +288,16 @@ export class Match {
 
     private broadcast() {
         for (const seat of this.seats) {
-            const opp = this.other(seat)
             seat.participant.send({
                 t: 'state',
                 timeLeftMs: this.timeLeftMs,
                 you: seat.state,
-                opponent: opp.state,
+                opponent: this.other(seat).state,
             })
-            const events = [...seat.events]
-            seat.events = []
-            if (events.length) seat.participant.send({ t: 'events', events })
+            if (seat.events.length) {
+                seat.participant.send({ t: 'events', events: seat.events })
+                seat.events = []
+            }
         }
     }
 
@@ -269,30 +320,45 @@ export class Match {
     }
 }
 
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
+
 /** Messages come straight off the wire, so never trust their shape. */
 function isValidAction(msg: GameAction): boolean {
-    const validTile = (n: unknown) => Number.isInteger(n) && (n as number) >= 0 && (n as number) < TILE_COUNT
+    const validPlot = (n: unknown) => Number.isInteger(n) && (n as number) >= 0 && (n as number) < PLOT_COUNT
     switch (msg.t) {
+        case 'move':
+            return (
+                Number.isFinite(msg.x) &&
+                Number.isFinite(msg.y) &&
+                FACINGS.has(msg.facing) &&
+                typeof msg.moving === 'boolean'
+            )
+        case 'buy':
+            return (
+                typeof msg.id === 'string' &&
+                (isCrop(msg.id) || isItem(msg.id)) &&
+                (msg.plot === undefined || validPlot(msg.plot))
+            )
         case 'plant':
-            return validTile(msg.tile) && Object.hasOwn(CROPS, msg.crop)
+            return validPlot(msg.plot) && typeof msg.crop === 'string' && isCrop(msg.crop)
         case 'harvest':
-            return validTile(msg.tile)
-        case 'use':
-            return Object.hasOwn(ITEMS, msg.item) && (msg.tile === undefined || validTile(msg.tile))
+            return validPlot(msg.plot)
         default:
             return false
     }
 }
 
-type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
-
-function clearTile(tile: PlayerState['tiles'][number]) {
-    tile.crop = null
-    tile.progress = 0
-    tile.witherInMs = 0
+function clamp(v: number, min: number, max: number) {
+    return Math.max(min, Math.min(max, v))
 }
 
-function ripen(tile: PlayerState['tiles'][number]) {
-    tile.progress = 1
-    tile.witherInMs = RIPE_WINDOW_MS
+function clearPlot(plot: PlotState) {
+    plot.crop = null
+    plot.progress = 0
+    plot.witherInMs = 0
+}
+
+function ripen(plot: PlotState) {
+    plot.progress = 1
+    plot.witherInMs = RIPE_WINDOW_MS
 }

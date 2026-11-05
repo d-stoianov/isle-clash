@@ -1,6 +1,15 @@
 import type { CropId, ItemId } from './config.ts'
 
-export interface TileState {
+export type Facing = 'down' | 'up' | 'left' | 'right'
+
+export interface AvatarState {
+    x: number
+    y: number
+    facing: Facing
+    moving: boolean
+}
+
+export interface PlotState {
     crop: CropId | null
     /** 0..1 while growing, 1 when ripe */
     progress: number
@@ -17,7 +26,10 @@ export interface EffectsState {
 export interface PlayerState {
     name: string
     money: number
-    tiles: TileState[]
+    avatar: AvatarState
+    /** seeds bought in the shop and not planted yet */
+    seeds: Record<CropId, number>
+    plots: PlotState[]
     effects: EffectsState
     cooldowns: Record<ItemId, number>
 }
@@ -35,18 +47,23 @@ export type ClientMessage =
     | { t: 'bot'; name: string }
     /** leave the room you are waiting in */
     | { t: 'cancel' }
-    | { t: 'plant'; tile: number; crop: CropId }
-    | { t: 'harvest'; tile: number }
-    | { t: 'use'; item: ItemId; tile?: number }
+    /** your avatar's position, sent continuously while moving */
+    | { t: 'move'; x: number; y: number; facing: Facing; moving: boolean }
+    /** buy seeds or an item (must be at the shop). `plot` targets an enemy plot. */
+    | { t: 'buy'; id: CropId | ItemId; plot?: number }
+    | { t: 'plant'; plot: number; crop: CropId }
+    | { t: 'harvest'; plot: number }
+
+export type GameAction = Extract<ClientMessage, { t: 'move' | 'buy' | 'plant' | 'harvest' }>
 
 // ---- server -> client ----
 
 export type EndReason = 'time' | 'opponent_left'
 
 export type GameEvent =
-    | { kind: 'item'; by: Side; item: ItemId; tile?: number; blocked: boolean }
-    | { kind: 'harvest'; by: Side; tile: number; amount: number }
-    | { kind: 'wither'; by: Side; tile: number }
+    | { kind: 'item'; by: Side; item: ItemId; plot?: number; blocked: boolean }
+    | { kind: 'harvest'; by: Side; plot: number; amount: number }
+    | { kind: 'wither'; by: Side; plot: number }
 
 export type ServerMessage =
     | { t: 'room'; code: string }

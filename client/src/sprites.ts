@@ -1,10 +1,10 @@
 import Phaser from 'phaser'
-import type { CropId, ItemId } from '@gogrow/shared'
+import type { ItemId } from '@gogrow/shared'
 
 /**
- * Hand-made 12x12 pixel art, defined as character grids so the game ships
- * without binary assets. Each character maps to a colour in PALETTE ('.' is
- * transparent). Replace with real spritesheets whenever we have an artist.
+ * Hand-made 12x12 pixel-art icons for shop items (the asset pack has none),
+ * defined as character grids. Each character maps to a colour in PALETTE
+ * ('.' is transparent). Also generates the tilled-soil plot tile.
  */
 
 const PALETTE: Record<string, string> = {
@@ -18,37 +18,7 @@ const PALETTE: Record<string, string> = {
     s: '#e8901a', S: '#ffd43b', c: '#a8e4ff', t: '#8a8f99', T: '#c9ced6',
 }
 
-const SPRITES: Record<CropId | ItemId | 'sprout', string[]> = {
-    sprout: [
-        '............', '............', '............', '............',
-        '...gg..gg...', '..gGGggGGg..', '...gGGGGg...', '.....GG.....',
-        '.....GG.....', '.....GG.....', '....bGGb....', '...bbbbbb...',
-    ],
-    radish: [
-        '...g....g...', '..gGg..gGg..', '..gGGggGGg..', '...gGGGGg...',
-        '.....GG.....', '...pppppp...', '..pPPPPPPp..', '..pPWPPPPp..',
-        '..pPPPPPPp..', '...pPPPPp...', '....pPPp....', '.....pp.....',
-    ],
-    carrot: [
-        '....g.g.g...', '....gGgGg...', '.....gGg....', '....oooo....',
-        '...oOOOOo...', '...oOWOOo...', '...oOOOOo...', '....oOOo....',
-        '....oOOo....', '.....oOo....', '.....oo.....', '......o.....',
-    ],
-    corn: [
-        '.....yy.....', '....yYYy....', '....yYWy....', '...gyYYyg...',
-        '...gyYYyg...', '..gGyYYyGg..', '..gGyYYyGg..', '..gGGyyGGg..',
-        '...gGGGGg...', '....gGGg....', '.....gg.....', '.....gg.....',
-    ],
-    pumpkin: [
-        '.....bg.....', '.....b......', '..oooooooo..', '.oOOoOOoOOo.',
-        'oOOOoOOoOOOo', 'oOWOoOOoOOOo', 'oOOOoOOoOOOo', 'oOOOoOOoOOOo',
-        'oOOOoOOoOOOo', '.oOOoOOoOOo.', '..oooooooo..', '............',
-    ],
-    melon: [
-        '............', '...mmmmmm...', '..mMMmMMmm..', '.mMmMMmMMmm.',
-        'mMMmMWmMMmMm', 'mMmMMmMMmMMm', 'mMmMMmMMmMMm', 'mMMmMMmMMmMm',
-        '.mMmMMmMMmm.', '..mMMmMMmm..', '...mmmmmm...', '............',
-    ],
+const SPRITES: Record<ItemId, string[]> = {
     fertilizer: [
         '....kkkk....', '.....kk.....', '.....kk.....', '....kKKk....',
         '...kKKKKk...', '..kKVVVVKk..', '..kVVWVVVk..', '.kVVVVVVVVk.',
@@ -99,4 +69,22 @@ export function registerSprites(scene: Phaser.Scene) {
         })
         tex.refresh()
     }
+    makeSoil(scene, 'soil', '#8a5a33', '#6e4426')
+    makeSoil(scene, 'soil-planted', '#6e4426', '#55331b')
+}
+
+/** 16x16 tilled-soil tile: outlined patch with horizontal furrows. */
+function makeSoil(scene: Phaser.Scene, key: string, base: string, furrow: string) {
+    if (scene.textures.exists(key)) return
+    const tex = scene.textures.createCanvas(key, 16, 16)!
+    const ctx = tex.getContext()
+    ctx.fillStyle = '#3b2412'
+    ctx.fillRect(1, 1, 14, 14)
+    ctx.fillStyle = base
+    ctx.fillRect(2, 2, 12, 12)
+    ctx.fillStyle = furrow
+    for (const y of [4, 8, 12]) ctx.fillRect(3, y, 10, 1)
+    ctx.fillStyle = 'rgba(255,255,255,0.12)'
+    ctx.fillRect(2, 2, 12, 1)
+    tex.refresh()
 }
